@@ -22,11 +22,20 @@ or denied, is appended to a hash-chained audit log and returns an `audit_id`.
 
 ## Core workflow
 
-1. List hosts before anything else:
+1. List hosts, or better, search for the thing you were asked about:
 
    ```bash
+   ssha hosts find payment        # the service, not the machine
    ssha hosts list
    ssha hosts list --tag prod
+   ```
+
+   Each host entry lists the **applications** it runs, with the systemd unit, ports,
+   log files and runbook from the operator's config. That is how you go from "the
+   checkout service is slow" to the right command without guessing or asking.
+
+   ```bash
+   ssha hosts show prod-web       # applications, units, log paths, policy
    ```
 
 2. If a host is newly configured or something fails, self-test it. This checks the
@@ -60,9 +69,10 @@ or denied, is appended to a hash-chained audit log and returns an `audit_id`.
    ssha run web-1 -e APP_ENV=staging -- env
    ```
 
-6. Touch a fleet in one call:
+6. Touch a fleet in one call. Prefer selecting by what the host runs:
 
    ```bash
+   ssha multi --query checkout -- systemctl status checkout-api
    ssha multi --tag prod -- uptime
    ssha multi --host web-1 --host web-2 -- df -h
    ```

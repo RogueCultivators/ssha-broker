@@ -15,6 +15,7 @@ import (
 // transport.
 type Backend interface {
 	Hosts(tags, patterns []string, includeDisabled bool) []broker.HostInfo
+	FindHosts(q broker.HostQuery) []broker.HostInfo
 	DescribeHost(name string) (broker.HostInfo, error)
 	Exec(ctx context.Context, req broker.ExecRequest) (*broker.ExecResult, error)
 	ExecMany(ctx context.Context, req broker.MultiExecRequest) ([]*broker.ExecResult, error)
@@ -72,7 +73,11 @@ func (s *scoped) deniedHost(name string) error {
 }
 
 func (s *scoped) Hosts(tags, patterns []string, includeDisabled bool) []broker.HostInfo {
-	all := s.base.Hosts(tags, patterns, includeDisabled)
+	return s.FindHosts(broker.HostQuery{Tags: tags, Names: patterns, IncludeDisabled: includeDisabled})
+}
+
+func (s *scoped) FindHosts(q broker.HostQuery) []broker.HostInfo {
+	all := s.base.FindHosts(q)
 	out := all[:0]
 	for _, h := range all {
 		if s.allows(h.Name) {
@@ -99,7 +104,7 @@ func (s *scoped) Exec(ctx context.Context, req broker.ExecRequest) (*broker.Exec
 func (s *scoped) ExecMany(ctx context.Context, req broker.MultiExecRequest) ([]*broker.ExecResult, error) {
 	// Resolve the selection first, verify every host is permitted, then pass an
 	// explicit name list down so the base broker cannot fan out any further.
-	candidates := s.base.Hosts(req.Tags, req.Hosts, false)
+	candidates := s.base.FindHosts(broker.HostQuery{Tags: req.Tags, Names: req.Hosts, Query: req.Query})
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no hosts matched (names=%v tags=%v)", req.Hosts, req.Tags)
 	}

@@ -98,6 +98,27 @@ hosts:
       # fingerprints: ["SHA256:abc123..."]   # alternative to known_hosts
       # insecure: false                       # never enable in production
     work_dir: /srv/app
+    # What runs here. An agent asked to fix "the checkout service" finds this
+    # host by searching for it, so name the systemd unit and the log paths it
+    # needs. Nothing secret belongs in an app entry.
+    apps:
+      - name: nginx
+        description: Reverse proxy for the public site
+        kind: web
+        unit: nginx.service
+        ports: [80, 443]
+        logs: [/var/log/nginx/error.log]
+        path: /etc/nginx
+        tags: [edge]
+      - name: checkout-api
+        description: Checkout service; restart drains in-flight requests first
+        kind: api
+        unit: checkout-api.service
+        ports: [8080]
+        logs: [/var/log/checkout/api.log]
+        path: /srv/checkout
+        tags: [critical, team-payments]
+        runbook: https://runbooks.example.com/checkout
     policy:
       mode: readonly
       # readonly rejects shell metacharacters by default (; | & < > ` newline

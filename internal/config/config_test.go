@@ -317,6 +317,85 @@ func TestMergeDisclosureAndRedaction(t *testing.T) {
 	}
 }
 
+func TestMatchQuery(t *testing.T) {
+	h := Host{
+		Name:        "prod-web",
+		Description: "public frontend",
+		Tags:        []string{"prod", "edge"},
+		Apps: []App{
+			{
+				Name:        "checkout-api",
+				Description: "handles checkout",
+				Kind:        "api",
+				Unit:        "checkout-api.service",
+				Path:        "/srv/checkout",
+				Logs:        []string{"/var/log/checkout/api.log"},
+				Tags:        []string{"team-payments", "critical"},
+				Runbook:     "https://runbooks.example.com/checkout",
+			},
+		},
+	}
+	tests := []struct {
+		query string
+		want  bool
+	}{
+		{"", true},
+		{"prod-web", true},
+		{"frontend", true},
+		{"edge", true},
+		{"checkout", true},
+		{"CHECKOUT-API.SERVICE", true},
+		{"team-payments", true},
+		{"runbooks.example.com", true},
+		{"/var/log/checkout", true},
+		{"checkout postgres", false},
+		{"nosuchservice", false},
+		{"prod", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.query, func(t *testing.T) {
+			if got := h.MatchQuery(tc.query); got != tc.want {
+				t.Errorf("MatchQuery(%q) = %v, want %v", tc.query, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHostApp(t *testing.T) {
+	h := Host{Apps: []App{{Name: "checkout-api"}, {Name: "nginx"}}}
+	if _, ok := h.App("CHECKOUT-API"); !ok {
+		t.Error("app lookup should be case-insensitive")
+	}
+	if _, ok := h.App("ghost"); ok {
+		t.Error("unknown app should not resolve")
+	}
+}
+
+func TestValidateRejectsBadApps(t *testing.T) {
+	tests := []struct {
+		name string
+		apps string
+		want string
+	}{
+		{"missing name", "apps: [{kind: api}]", "has no name"},
+		{"duplicate", "apps: [{name: a}, {name: A}]", "duplicate app name"},
+		{"bad port", "apps: [{name: a, ports: [0]}]", "invalid port"},
+		{"huge port", "apps: [{name: a, ports: [70000]}]", "invalid port"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "hosts:\n  - name: web\n    auth: {type: key, key_path: /tmp/k}\n    " + tc.apps + "\n"
+			_, err := Load(writeConfig(t, body))
+			if err == nil {
+				t.Fatalf("expected an error containing %q", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestSelect(t *testing.T) {
 	body := `
 hosts:

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -154,20 +155,21 @@ func newSessionID() string {
 // Fields that a host's disclosure policy withholds are omitted entirely rather
 // than sent empty, so a caller can tell "hidden" from "not configured".
 type HostInfo struct {
-	Name          string   `json:"name"`
-	Addr          string   `json:"addr,omitempty"`
-	User          string   `json:"user,omitempty"`
-	Tags          []string `json:"tags,omitempty"`
-	Description   string   `json:"description,omitempty"`
-	Auth          string   `json:"auth,omitempty"`
-	ProxyJump     string   `json:"proxy_jump,omitempty"`
-	WorkDir       string   `json:"work_dir,omitempty"`
-	PolicyMode    string   `json:"policy_mode"`
-	Allow         []string `json:"allow_commands,omitempty"`
-	Deny          []string `json:"deny_commands,omitempty"`
-	Timeout       string   `json:"timeout"`
-	MaxOutputSize int      `json:"max_output_bytes"`
-	Disabled      bool     `json:"disabled,omitempty"`
+	Name          string       `json:"name"`
+	Addr          string       `json:"addr,omitempty"`
+	User          string       `json:"user,omitempty"`
+	Tags          []string     `json:"tags,omitempty"`
+	Description   string       `json:"description,omitempty"`
+	Apps          []config.App `json:"apps,omitempty"`
+	Auth          string       `json:"auth,omitempty"`
+	ProxyJump     string       `json:"proxy_jump,omitempty"`
+	WorkDir       string       `json:"work_dir,omitempty"`
+	PolicyMode    string       `json:"policy_mode"`
+	Allow         []string     `json:"allow_commands,omitempty"`
+	Deny          []string     `json:"deny_commands,omitempty"`
+	Timeout       string       `json:"timeout"`
+	MaxOutputSize int          `json:"max_output_bytes"`
+	Disabled      bool         `json:"disabled,omitempty"`
 }
 
 // disclosure returns the effective disclosure level for a host, honouring the
@@ -188,6 +190,7 @@ func (b *Broker) hostInfo(h *config.Host) HostInfo {
 		Name:          h.Name,
 		Tags:          h.Tags,
 		Description:   h.Description,
+		Apps:          h.Apps,
 		PolicyMode:    spec.Mode,
 		Allow:         spec.Allow,
 		Deny:          spec.Deny,
@@ -199,6 +202,7 @@ func (b *Broker) hostInfo(h *config.Host) HostInfo {
 	case config.DisclosureBlind:
 		info.Tags = nil
 		info.Description = ""
+		info.Apps = nil
 		info.Allow = nil
 		info.Deny = nil
 	case config.DisclosureAlias:
@@ -213,17 +217,33 @@ func (b *Broker) hostInfo(h *config.Host) HostInfo {
 	return info
 }
 
-// Hosts lists configured hosts, filtered by tags and name globs.
-func (b *Broker) Hosts(tags, patterns []string, includeDisabled bool) []HostInfo {
-	hosts := b.cfg.Select(tags, patterns)
-	out := make([]HostInfo, 0, len(hosts))
-	for _, h := range hosts {
-		out = append(out, b.hostInfo(h))
+// HostQuery selects hosts for discovery.
+type HostQuery struct {
+	// Tags must all be present.
+	Tags []string
+	// Names are glob patterns matched against the host name.
+	Names []string
+	// Query is free text; every whitespace-separated word must appear in the
+	// host's name, description, tags or one of its apps.
+	Query string
+	// IncludeDisabled also returns hosts marked disabled.
+	IncludeDisabled bool
+}
+
+// FindHosts returns the hosts matching a discovery query, sorted by name and
+// already filtered by each host's disclosure policy.
+func (b *Broker) FindHosts(q HostQuery) []HostInfo {
+	selected := b.cfg.Select(q.Tags, q.Names)
+	out := make([]HostInfo, 0, len(selected))
+	for _, h := range selected {
+		if h.MatchQuery(q.Query) {
+			out = append(out, b.hostInfo(h))
+		}
 	}
-	if includeDisabled {
+	if q.IncludeDisabled {
 		for i := range b.cfg.Hosts {
 			h := &b.cfg.Hosts[i]
-			if !h.Disabled {
+			if !h.Disabled || !h.MatchQuery(q.Query) || !hasAllTags(h.Tags, q.Tags) || !matchesNames(q.Names, h.Name) {
 				continue
 			}
 			out = append(out, b.hostInfo(h))
@@ -231,6 +251,39 @@ func (b *Broker) Hosts(tags, patterns []string, includeDisabled bool) []HostInfo
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+func hasAllTags(have, want []string) bool {
+	for _, w := range want {
+		found := false
+		for _, h := range have {
+			if h == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func matchesNames(patterns []string, name string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+	for _, p := range patterns {
+		if ok, _ := filepath.Match(p, name); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// Hosts lists configured hosts, filtered by tags and name globs.
+func (b *Broker) Hosts(tags, patterns []string, includeDisabled bool) []HostInfo {
+	return b.FindHosts(HostQuery{Tags: tags, Names: patterns, IncludeDisabled: includeDisabled})
 }
 
 // PolicyCheck evaluates a command without executing it or writing an audit
@@ -357,8 +410,11 @@ func (b *Broker) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
 
 // MultiExecRequest fans a command out over several hosts.
 type MultiExecRequest struct {
-	Hosts          []string
-	Tags           []string
+	Hosts []string
+	Tags  []string
+	// Query selects hosts the same way ssh_list_hosts does, e.g. every host
+	// running the payment-api app.
+	Query          string
 	Command        string
 	Cwd            string
 	Timeout        time.Duration
@@ -369,9 +425,13 @@ type MultiExecRequest struct {
 // ExecMany runs the same command on every matching host, in parallel, and
 // returns results in the order the hosts were selected.
 func (b *Broker) ExecMany(ctx context.Context, req MultiExecRequest) ([]*ExecResult, error) {
-	hosts := b.cfg.Select(req.Tags, req.Hosts)
-	if len(hosts) == 0 {
-		return nil, fmt.Errorf("no hosts matched (names=%v tags=%v)", req.Hosts, req.Tags)
+	selected := b.FindHosts(HostQuery{Tags: req.Tags, Names: req.Hosts, Query: req.Query})
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("no hosts matched (names=%v tags=%v query=%q)", req.Hosts, req.Tags, req.Query)
+	}
+	hosts := make([]string, len(selected))
+	for i, h := range selected {
+		hosts[i] = h.Name
 	}
 
 	concurrency := req.Concurrency
@@ -385,7 +445,7 @@ func (b *Broker) ExecMany(ctx context.Context, req MultiExecRequest) ([]*ExecRes
 	results := make([]*ExecResult, len(hosts))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, concurrency)
-	for i, h := range hosts {
+	for i, name := range hosts {
 		wg.Add(1)
 		go func(i int, name string) {
 			defer wg.Done()
@@ -405,7 +465,7 @@ func (b *Broker) ExecMany(ctx context.Context, req MultiExecRequest) ([]*ExecRes
 				res.Error = err.Error()
 			}
 			results[i] = res
-		}(i, h.Name)
+		}(i, name)
 	}
 	wg.Wait()
 	return results, nil

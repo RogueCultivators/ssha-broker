@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ssha · config</title>
+<style>
+  :root {
+    color-scheme: dark light;
+    --bg: #101216;
+    --panel: #171a20;
+    --panel-2: #1d2128;
+    --line: #2a2f38;
+    --text: #dfe3ea;
+    --muted: #8b93a3;
+    --accent: #6aa9ff;
+    --ok: #5ec98a;
+    --warn: #e0b34e;
+    --bad: #e06c75;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9; --panel: #fff; --panel-2: #f0f2f5; --line: #d9dde4;
+      --text: #1b1f27; --muted: #666f7d; --accent: #2f6fd0;
+      --ok: #1f8a52; --warn: #9a6b00; --bad: #b83a45;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  header .path { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  header .status { margin-left: auto; font-size: 12px; color: var(--muted); }
+  .layout { display: grid; grid-template-columns: minmax(240px, 300px) 1fr; height: calc(100vh - 45px); }
+  aside { border-right: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 12px; }
+  main { overflow: auto; padding: 16px 20px 60px; }
+
+  input, select, textarea, button { font: inherit; color: inherit; }
+  input, select, textarea {
+    width: 100%; padding: 6px 8px; background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  textarea { font-family: var(--mono); font-size: 12.5px; min-height: 62px; resize: vertical; }
+  input[type=checkbox] { width: auto; }
+  button {
+    padding: 6px 12px; background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 6px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0b1220; font-weight: 600; }
+  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  button[disabled] { opacity: .5; cursor: not-allowed; }
+
+  .search { display: flex; gap: 6px; margin-bottom: 10px; }
+  .hostlist { list-style: none; margin: 0 0 14px; padding: 0; }
+  .hostlist li {
+    padding: 7px 9px; border: 1px solid transparent; border-radius: 7px; cursor: pointer;
+    margin-bottom: 2px;
+  }
+  .hostlist li:hover { background: var(--panel-2); }
+  .hostlist li.sel { background: var(--panel-2); border-color: var(--accent); }
+  .hostlist .name { font-family: var(--mono); font-size: 13px; }
+  .hostlist .sub { color: var(--muted); font-size: 11.5px; }
+  .badge {
+    display: inline-block; padding: 0 5px; border-radius: 4px; font-size: 10.5px;
+    border: 1px solid var(--line); color: var(--muted); font-family: var(--mono);
+  }
+  .badge.allow { color: var(--ok); border-color: var(--ok); }
+  .badge.readonly { color: var(--warn); border-color: var(--warn); }
+  .badge.deny { color: var(--bad); border-color: var(--bad); }
+  .badge.hidden { color: var(--accent); border-color: var(--accent); }
+
+  fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 14px; padding: 12px 14px 14px; }
+  legend { padding: 0 6px; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px 14px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+  .hint { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .check { display: flex; gap: 7px; align-items: center; font-size: 13px; color: var(--text); }
+  .check input { flex: none; }
+
+  .actions {
+    position: sticky; bottom: 0; display: flex; gap: 8px; align-items: center;
+    padding: 10px 0 0; margin-top: 4px; border-top: 1px solid var(--line);
+    background: linear-gradient(to bottom, transparent, var(--bg) 25%);
+  }
+  .result { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; margin-top: 8px; }
+  .result.ok { color: var(--ok); }
+  .result.bad { color: var(--bad); }
+  .warnbox {
+    border: 1px solid var(--warn); color: var(--warn); border-radius: 7px;
+    padding: 8px 10px; margin-bottom: 12px; font-size: 12.5px;
+  }
+  .warnbox ul { margin: 6px 0 0; padding-left: 18px; }
+
+  .app { border: 1px solid var(--line); border-radius: 7px; padding: 10px; margin-bottom: 8px; background: var(--panel-2); }
+  .app .row { justify-content: space-between; margin-bottom: 8px; }
+  .app .row strong { font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  td.cmd { font-family: var(--mono); word-break: break-all; }
+  td.denied { color: var(--bad); }
+  .empty { color: var(--muted); }
+  details > summary { cursor: pointer; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ssha</h1>
+  <span class="path" id="cfgpath"></span>
+  <span class="status" id="status"></span>
+</header>
+
+<div class="layout">
+  <aside>
+    <div class="search">
+      <input id="search" placeholder="search hosts, apps, tags…" autocomplete="off">
+      <button id="new" title="New host">+</button>
+    </div>
+    <ul class="hostlist" id="list"></ul>
+    <details id="auditbox">
+      <summary>audit log</summary>
+      <div class="row" style="margin:6px 0">
+        <button id="audit-refresh">refresh</button>
+        <span class="sub" id="audit-path"></span>
+      </div>
+      <div id="audit-out"></div>
+    </details>
+  </aside>
+
+  <main>
+    <div id="warnings"></div>
+    <p class="empty" id="nothing">Select a host on the left, or create one.</p>
+
+    <form id="form" hidden autocomplete="off">
+      <fieldset>
+        <legend>Host</legend>
+        <div class="grid">
+          <div>
+            <label for="f-name">name (the alias an agent sees)</label>
+            <input id="f-name" required placeholder="prod-web">
+          </div>
+          <div>
+            <label for="f-addr">address (IP or DNS name)</label>
+            <input id="f-addr" placeholder="10.0.0.10">
+          </div>
+          <div>
+            <label for="f-port">port</label>
+            <input id="f-port" type="number" min="1" max="65535" placeholder="22">
+          </div>
+          <div>
+            <label for="f-user">user</label>
+            <input id="f-user" placeholder="deploy">
+          </div>
+          <div>
+            <label for="f-work_dir">default working directory</label>
+            <input id="f-work_dir" placeholder="/srv/app">
+          </div>
+          <div>
+            <label for="f-proxy_jump">via jump host (another host's name)</label>
+            <input id="f-proxy_jump" placeholder="bastion">
+          </div>
+        </div>
+        <div style="margin-top:10px">
+          <label for="f-description">description (shown to the agent)</label>
+          <input id="f-description" placeholder="Public web frontend">
+        </div>
+        <div class="grid" style="margin-top:10px">
+          <div>
+            <label for="f-tags">tags (comma separated)</label>
+            <input id="f-tags" placeholder="prod, web">
+          </div>
+          <div class="check" style="align-self:end; padding-bottom:6px">
+            <input type="checkbox" id="f-disabled"><label for="f-disabled" style="margin:0">disabled: keep in the file but never select it</label>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Applications on this host</legend>
+        <p class="hint" style="margin-top:0">
+          An agent asked to fix "the payment service" finds it through these entries, so record the
+          systemd unit, the log paths and the ports it needs. Nothing secret belongs here.
+        </p>
+        <div id="apps"></div>
+        <button type="button" id="app-add">+ add application</button>
+      </fieldset>
+
+      <fieldset>
+        <legend>Authentication</legend>
+        <div class="grid">
+          <div>
+            <label for="f-auth-type">type</label>
+            <select id="f-auth-type">
+              <option value="key">key (private key file)</option>
+              <option value="agent">agent (local ssh-agent)</option>
+              <option value="password">password</option>
+            </select>
+          </div>
+          <div class="auth-key">
+            <label for="f-key_path">key_path</label>
+            <input id="f-key_path" placeholder="~/.ssh/id_ed25519">
+          </div>
+          <div class="auth-key">
+            <label for="f-passphrase_env">passphrase_env</label>
+            <input id="f-passphrase_env" placeholder="SSHA_KEY_PASSPHRASE">
+          </div>
+          <div class="auth-key">
+            <label for="f-passphrase_file">passphrase_file</label>
+            <input id="f-passphrase_file" placeholder="~/.config/ssha/key.pass">
+          </div>
+          <div class="auth-key">
+            <label for="f-key_env">key_env (PEM in an env var, for CI)</label>
+            <input id="f-key_env" placeholder="SSHA_PRIVATE_KEY">
+          </div>
+          <div class="auth-pw">
+            <label for="f-password_file">password_file (one line, mode 0600)</label>
+            <input id="f-password_file" placeholder="~/.config/ssha/prod.pass">
+          </div>
+          <div class="auth-pw">
+            <label for="f-password_env">password_env (wins over the file)</label>
+            <input id="f-password_env" placeholder="SSHA_PROD_PASSWORD">
+          </div>
+        </div>
+        <p class="hint">
+          Passwords and passphrases never enter the config, the log or a tool result. With neither a
+          file nor an env var, the CLI prompts and the MCP server returns an error rather than hanging.
+        </p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Host key</legend>
+        <div class="grid">
+          <div>
+            <label for="f-known_hosts">known_hosts file</label>
+            <input id="f-known_hosts" placeholder="~/.ssh/known_hosts">
+          </div>
+          <div>
+            <label for="f-fingerprints">pinned fingerprints (one per line)</label>
+            <textarea id="f-fingerprints" placeholder="SHA256:…"></textarea>
+          </div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button type="button" id="scan">scan host keys</button>
+          <span class="hint" id="scan-hint">fetches the server's keys and shows their fingerprints</span>
+        </div>
+        <div class="result" id="scan-out"></div>
+        <div class="check" style="margin-top:8px">
+          <input type="checkbox" id="f-insecure"><label for="f-insecure" style="margin:0">insecure: skip verification (testing only)</label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Policy</legend>
+        <div class="check" style="margin-bottom:10px">
+          <input type="checkbox" id="f-override"><label for="f-override" style="margin:0">override the global policy for this host</label>
+        </div>
+        <div id="policy-fields">
+          <div class="grid">
+            <div>
+              <label for="f-mode">mode</label>
+              <select id="f-mode">
+                <option value="allow">allow — everything except the deny list</option>
+                <option value="readonly">readonly — only the allow list, no shell metacharacters</option>
+                <option value="deny">deny — nothing runs</option>
+              </select>
+            </div>
+            <div>
+              <label for="f-timeout">timeout</label>
+              <input id="f-timeout" placeholder="60s">
+            </div>
+            <div>
+              <label for="f-max">max output bytes</label>
+              <input id="f-max" type="number" min="0" placeholder="262144">
+            </div>
+            <div>
+              <label for="f-disclosure">disclosure</label>
+              <select id="f-disclosure">
+                <option value="full">full — agent sees addr, port, user</option>
+                <option value="alias">alias — no addr, port, user</option>
+                <option value="blind">blind — name and limits only</option>
+              </select>
+            </div>
+          </div>
+          <div class="grid" style="margin-top:10px">
+            <div>
+              <label for="f-allow">allow_commands (one regex per line)</label>
+              <textarea id="f-allow" placeholder="^ls\b"></textarea>
+            </div>
+            <div>
+              <label for="f-deny">deny_commands (one regex per line)</label>
+              <textarea id="f-deny" placeholder="^\s*rm\s+-rf\s+/"></textarea>
+            </div>
+            <div>
+              <label for="f-deny_paths">deny_paths (one regex per line)</label>
+              <textarea id="f-deny_paths" placeholder="^/etc/shadow$"></textarea>
+            </div>
+            <div>
+              <label for="f-redact_patterns">redact_patterns (one regex per line)</label>
+              <textarea id="f-redact_patterns" placeholder="\b\d{1,3}(\.\d{1,3}){3}\b"></textarea>
+            </div>
+          </div>
+          <div class="grid" style="margin-top:10px">
+            <div class="check"><input type="checkbox" id="f-redact_output"><label for="f-redact_output" style="margin:0">redact_output: hide the addr/user in command output</label></div>
+            <div class="check"><input type="checkbox" id="f-allow_meta"><label for="f-allow_meta" style="margin:0">allow_shell_metacharacters in readonly mode</label></div>
+            <div class="check"><input type="checkbox" id="f-no_baseline"><label for="f-no_baseline" style="margin:0">disable_baseline (turn off the destructive-command list)</label></div>
+          </div>
+        </div>
+        <p class="hint" id="effective"></p>
+      </fieldset>
+
+      <div class="actions">
+        <button type="submit" class="primary" id="save">Save</button>
+        <button type="button" id="test">Test connection</button>
+        <button type="button" id="revert">Revert</button>
+        <button type="button" class="danger" id="del" style="margin-left:auto">Delete host</button>
+      </div>
+      <div class="result" id="result"></div>
+    </form>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const TOKEN = new URLSearchParams(location.search).get("token") || sessionStorage.getItem("ssha-token") || "";
+if (TOKEN) sessionStorage.setItem("ssha-token", TOKEN);
+if (location.search) history.replaceState(null, "", location.pathname);
+
+let state = null, hosts = [], selected = null, filter = "";
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { "X-SSHA-Token": TOKEN, "Content-Type": "application/json", ...(opts.headers || {}) },
+  });
+  const text = await res.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch { body = { error: text }; }
+  if (!res.ok) throw new Error((body && body.error) || res.statusText);
+  return body;
+}
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const lines = (s) => s.split("\n").map((x) => x.trim()).filter(Boolean);
+const commas = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
+const setStatus = (msg, bad) => { const el = $("status"); el.textContent = msg; el.style.color = bad ? "var(--bad)" : ""; };
+
+// ---------------------------------------------------------------------------
+// list
+// ---------------------------------------------------------------------------
+
+function renderList() {
+  const q = filter.toLowerCase();
+  const shown = hosts.filter((h) => {
+    if (!q) return true;
+    const hay = [h.name, h.description, (h.tags || []).join(" "), (h.apps || []).map((a) => a.name + " " + (a.description || "")).join(" ")]
+      .join(" ").toLowerCase();
+    return q.split(/\s+/).every((w) => hay.includes(w));
+  });
+  $("list").innerHTML = shown.map((h) => {
+    const tags = (h.tags || []).map((t) => `<span class="badge">${esc(t)}</span>`).join(" ");
+    const apps = (h.apps || []).length ? `${(h.apps || []).length} app${h.apps.length > 1 ? "s" : ""}` : "";
+    const hidden = h.effective_policy && h.effective_policy.disclosure && h.effective_policy.disclosure !== "full";
+    const warn = (h.warnings || []).length ? " ⚠" : "";
+    return `<li class="${h.name === selected ? "sel" : ""}" data-name="${esc(h.name)}">
+      <div class="name">${esc(h.name)} <span class="badge ${esc(h.effective_mode)}">${esc(h.effective_mode)}</span>${hidden ? ' <span class="badge hidden">hidden</span>' : ""}${warn}</div>
+      <div class="sub">${esc(h.description || [h.user, h.addr].filter(Boolean).join("@"))}</div>
+      <div class="sub">${tags}${apps ? (tags ? " · " : "") + apps : ""}</div>
+    </li>`;
+  }).join("") || `<li class="empty">no match</li>`;
+}
+
+$("list").addEventListener("click", (e) => {
+  const li = e.target.closest("li[data-name]");
+  if (!li) return;
+  selected = li.dataset.name;
+  renderList();
+  loadHost();
+});
+$("search").addEventListener("input", (e) => { filter = e.target.value; renderList(); });
+
+// ---------------------------------------------------------------------------
+// form
+// ---------------------------------------------------------------------------
+
+function blankHost() {
+  return { name: "", auth: { type: "key" }, host_key: {}, tags: [], apps: [] };
+}
+
+function loadHost() {
+  const h = hosts.find((x) => x.name === selected);
+  if (!h) return;
+  $("nothing").hidden = true;
+  $("form").hidden = false;
+  const v = (id, val) => { $(id).value = val ?? ""; };
+  v("f-name", h.name);
+  v("f-addr", h.addr); v("f-port", h.port || ""); v("f-user", h.user);
+  v("f-work_dir", h.work_dir); v("f-proxy_jump", h.proxy_jump);
+  v("f-description", h.description);
+  v("f-tags", (h.tags || []).join(", "));
+  $("f-disabled").checked = !!h.disabled;
+
+  v("f-auth-type", h.auth?.type || "key");
+  v("f-key_path", h.auth?.key_path); v("f-key_env", h.auth?.key_env);
+  v("f-passphrase_env", h.auth?.passphrase_env); v("f-passphrase_file", h.auth?.passphrase_file);
+  v("f-password_env", h.auth?.password_env); v("f-password_file", h.auth?.password_file);
+
+  v("f-known_hosts", h.host_key?.known_hosts);
+  v("f-fingerprints", (h.host_key?.fingerprints || []).join("\n"));
+  $("f-insecure").checked = !!h.host_key?.insecure;
+
+  const p = h.policy;
+  $("f-override").checked = !!p;
+  v("f-mode", p?.mode || "allow");
+  v("f-timeout", p?.timeout ?? "");
+  v("f-max", p?.max_output_bytes || "");
+  v("f-disclosure", p?.disclosure || "full");
+  v("f-allow", (p?.allow_commands || []).join("\n"));
+  v("f-deny", (p?.deny_commands || []).join("\n"));
+  v("f-deny_paths", (p?.deny_paths || []).join("\n"));
+  v("f-redact_patterns", (p?.redact_patterns || []).join("\n"));
+  $("f-redact_output").checked = !!p?.redact_output;
+  $("f-allow_meta").checked = !!p?.allow_shell_metacharacters;
+  $("f-no_baseline").checked = !!p?.disable_baseline;
+
+  renderApps(h.apps || []);
+  syncAuthFields();
+  syncPolicyFields();
+  renderWarnings(h.warnings || []);
+  $("result").textContent = "";
+}
+
+function renderWarnings(list) {
+  $("warnings").innerHTML = list.length
+    ? `<div class="warnbox"><strong>${list.length} thing${list.length > 1 ? "s" : ""} to check</strong><ul>${list.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>`
+    : "";
+}
+
+function syncAuthFields() {
+  const type = $("f-auth-type").value;
+  document.querySelectorAll(".auth-key").forEach((el) => { el.style.display = type === "key" ? "" : "none"; });
+  document.querySelectorAll(".auth-pw").forEach((el) => { el.style.display = type === "password" ? "" : "none"; });
+}
+
+function syncPolicyFields() {
+  $("policy-fields").style.opacity = $("f-override").checked ? "1" : ".45";
+  const h = hosts.find((x) => x.name === selected);
+  const eff = h?.effective_policy;
+  if (eff) {
+    $("effective").textContent = `effective now: mode=${eff.mode}, timeout=${eff.timeout}, disclosure=${eff.disclosure || "full"}`
+      + (eff.allow_commands?.length ? `, allow=${eff.allow_commands.length} rule(s)` : "")
+      + (eff.deny_commands?.length ? `, deny=${eff.deny_commands.length} rule(s)` : "");
+  }
+}
+
+$("f-auth-type").addEventListener("change", syncAuthFields);
+$("f-override").addEventListener("change", syncPolicyFields);
+
+// apps ----------------------------------------------------------------------
+
+function appCard(a = {}) {
+  const d = document.createElement("div");
+  d.className = "app";
+  d.innerHTML = `
+    <div class="row"><strong class="app-title">${esc(a.name || "new application")}</strong>
+      <button type="button" class="app-del danger">remove</button></div>
+    <div class="grid">
+      <div><label>name</label><input class="a-name" value="${esc(a.name)}" placeholder="payment-api"></div>
+      <div><label>kind</label><input class="a-kind" value="${esc(a.kind)}" placeholder="api / web / worker / db"></div>
+      <div><label>systemd unit</label><input class="a-unit" value="${esc(a.unit)}" placeholder="payment-api.service"></div>
+      <div><label>ports</label><input class="a-ports" value="${(a.ports || []).join(", ")}" placeholder="8080, 9090"></div>
+      <div><label>install / working dir</label><input class="a-path" value="${esc(a.path)}" placeholder="/srv/payment"></div>
+      <div><label>log files</label><input class="a-logs" value="${(a.logs || []).join(", ")}" placeholder="/var/log/payment/api.log"></div>
+      <div><label>tags</label><input class="a-tags" value="${(a.tags || []).join(", ")}" placeholder="critical, team-payments"></div>
+      <div><label>runbook</label><input class="a-runbook" value="${esc(a.runbook)}" placeholder="https://…"></div>
+    </div>
+    <div style="margin-top:8px"><label>description</label><input class="a-desc" value="${esc(a.description)}" placeholder="Handles card payments; restart is safe, drains first"></div>`;
+  d.querySelector(".a-name").addEventListener("input", (e) => { d.querySelector(".app-title").textContent = e.target.value || "new application"; });
+  d.querySelector(".app-del").addEventListener("click", () => d.remove());
+  return d;
+}
+
+function renderApps(apps) {
+  const box = $("apps");
+  box.innerHTML = "";
+  apps.forEach((a) => box.appendChild(appCard(a)));
+}
+
+$("app-add").addEventListener("click", () => $("apps").appendChild(appCard()));
+
+function collectApps() {
+  return [...$("apps").querySelectorAll(".app")].map((d) => {
+    const g = (cls) => d.querySelector("." + cls).value.trim();
+    const ports = commas(g("a-ports")).map((n) => parseInt(n, 10)).filter((n) => Number.isFinite(n));
+    return {
+      name: g("a-name"),
+      kind: g("a-kind"),
+      description: g("a-desc"),
+      unit: g("a-unit"),
+      ports,
+      logs: commas(g("a-logs")),
+      path: g("a-path"),
+      tags: commas(g("a-tags")),
+      runbook: g("a-runbook"),
+    };
+  }).filter((a) => a.name);
+}
+
+// collect / save ------------------------------------------------------------
+
+function collect() {
+  const val = (id) => $(id).value.trim();
+  const num = (id) => { const n = parseInt(val(id), 10); return Number.isFinite(n) ? n : 0; };
+  const h = {
+    name: val("f-name"),
+    description: val("f-description"),
+    addr: val("f-addr"),
+    port: num("f-port"),
+    user: val("f-user"),
+    work_dir: val("f-work_dir"),
+    proxy_jump: val("f-proxy_jump"),
+    tags: commas(val("f-tags")),
+    disabled: $("f-disabled").checked,
+    auth: { type: val("f-auth-type") },
+    host_key: {},
+    apps: collectApps(),
+    policy: null,
+  };
+  const auth = h.auth;
+  if (auth.type === "key") {
+    auth.key_path = val("f-key_path");
+    auth.key_env = val("f-key_env");
+    auth.passphrase_env = val("f-passphrase_env");
+    auth.passphrase_file = val("f-passphrase_file");
+  } else if (auth.type === "password") {
+    auth.password_env = val("f-password_env");
+    auth.password_file = val("f-password_file");
+  }
+  const hk = h.host_key;
+  hk.known_hosts = val("f-known_hosts");
+  hk.fingerprints = lines($("f-fingerprints").value);
+  hk.insecure = $("f-insecure").checked;
+  if (!hk.known_hosts) delete hk.known_hosts;
+  if (!hk.fingerprints.length) delete hk.fingerprints;
+  if (!hk.insecure) delete hk.insecure;
+
+  if ($("f-override").checked) {
+    const timeout = val("f-timeout");
+    const p = {
+      mode: val("f-mode"),
+      disclosure: val("f-disclosure"),
+      allow_commands: lines($("f-allow").value),
+      deny_commands: lines($("f-deny").value),
+      deny_paths: lines($("f-deny_paths").value),
+      redact_patterns: lines($("f-redact_patterns").value),
+      redact_output: $("f-redact_output").checked,
+      allow_shell_metacharacters: $("f-allow_meta").checked,
+      disable_baseline: $("f-no_baseline").checked,
+    };
+    if (timeout) p.timeout = timeout;
+    const max = num("f-max");
+    if (max) p.max_output_bytes = max;
+    for (const k of ["allow_commands", "deny_commands", "deny_paths", "redact_patterns"]) if (!p[k].length) delete p[k];
+    h.policy = p;
+  }
+  return h;
+}
+
+function showResult(msg, bad) {
+  const el = $("result");
+  el.textContent = msg;
+  el.className = "result " + (bad ? "bad" : "ok");
+}
+
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const h = collect();
+  if (!h.name) { showResult("name is required", true); return; }
+  $("save").disabled = true;
+  try {
+    await api("/api/hosts", { method: "POST", body: JSON.stringify(h) });
+    selected = h.name;
+    await refresh();
+    showResult("saved to " + state.config_path, false);
+  } catch (err) {
+    showResult(String(err.message || err), true);
+  } finally {
+    $("save").disabled = false;
+  }
+});
+
+$("revert").addEventListener("click", loadHost);
+
+$("del").addEventListener("click", async () => {
+  if (!selected || !confirm(`Delete host "${selected}" from the config?`)) return;
+  try {
+    await api("/api/hosts/" + encodeURIComponent(selected), { method: "DELETE" });
+    selected = null;
+    $("form").hidden = true;
+    $("nothing").hidden = false;
+    await refresh();
+  } catch (err) { showResult(String(err.message || err), true); }
+});
+
+$("test").addEventListener("click", async () => {
+  if (!selected) return;
+  showResult("connecting…", false);
+  try {
+    const r = await api("/api/test", { method: "POST", body: JSON.stringify({ name: selected }) });
+    const bits = [`${r.ok ? "ok" : "FAILED"}  ${r.latency_ms}ms`];
+    if (r.host_key_fingerprint) bits.push(`key ${r.host_key_fingerprint} (${r.host_key_type})`);
+    if (r.error) bits.push(r.error);
+    showResult(bits.join("\n"), !r.ok);
+  } catch (err) { showResult(String(err.message || err), true); }
+});
+
+$("scan").addEventListener("click", async () => {
+  const addr = $("f-addr").value.trim() || $("f-name").value.trim();
+  const port = parseInt($("f-port").value, 10) || 22;
+  if (!addr) { showResult("set an address first", true); return; }
+  $("scan-out").textContent = "scanning…";
+  try {
+    const r = await api("/api/hostkey", { method: "POST", body: JSON.stringify({ addr, port }) });
+    $("scan-out").textContent = r.keys.map((k) => `${k.type.padEnd(22)} ${k.fingerprint}`).join("\n")
+      + "\n\nknown_hosts lines:\n" + r.keys.map((k) => "  " + k.line).join("\n");
+    $("f-fingerprints").value = r.keys.map((k) => k.fingerprint).join("\n");
+    showResult("scanned; the fingerprints are filled in — save to pin them", false);
+  } catch (err) {
+    $("scan-out").textContent = "";
+    showResult("scan failed: " + String(err.message || err), true);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// audit
+// ---------------------------------------------------------------------------
+
+async function loadAudit() {
+  try {
+    const r = await api("/api/audit?limit=50" + (selected ? "&host=" + encodeURIComponent(selected) : ""));
+    $("audit-path").textContent = r.audit_log;
+    const records = r.records || [];
+    if (!records.length) { $("audit-out").innerHTML = `<p class="empty">no records</p>`; return; }
+    $("audit-out").innerHTML = `<table>
+      <tr><th>when</th><th>host</th><th>decision</th><th>command</th></tr>
+      ${records.slice().reverse().map((x) => `<tr>
+        <td>${esc(new Date(x.time).toLocaleString())}</td>
+        <td>${esc(x.host)}</td>
+        <td class="${x.decision === "denied" ? "denied" : ""}">${esc(x.decision)}</td>
+        <td class="cmd">${esc(x.command || x.path || "")}</td>
+      </tr>`).join("")}</table>`;
+  } catch (err) {
+    $("audit-out").innerHTML = `<p class="empty">${esc(err.message || err)}</p>`;
+  }
+}
+$("audit-refresh").addEventListener("click", loadAudit);
+$("auditbox").addEventListener("toggle", () => { if ($("auditbox").open) loadAudit(); });
+
+// ---------------------------------------------------------------------------
+// boot
+// ---------------------------------------------------------------------------
+
+async function refresh() {
+  state = await api("/api/state");
+  hosts = state.hosts || [];
+  $("cfgpath").textContent = state.config_path;
+  renderList();
+  if (selected && hosts.some((h) => h.name === selected)) loadHost();
+  setStatus(hosts.length + " host(s)");
+}
+
+$("new").addEventListener("click", () => {
+  selected = null;
+  renderList();
+  $("nothing").hidden = true;
+  $("form").hidden = false;
+  const h = blankHost();
+  Object.assign(h, { name: "", description: "", addr: "", port: "", user: "", work_dir: "", proxy_jump: "", tags: [], apps: [] });
+  const v = (id, val) => { $(id).value = val ?? ""; };
+  ["f-name","f-addr","f-port","f-user","f-work_dir","f-proxy_jump","f-description","f-tags",
+   "f-key_path","f-key_env","f-passphrase_env","f-passphrase_file","f-password_env","f-password_file",
+   "f-known_hosts","f-fingerprints","f-timeout","f-max","f-allow","f-deny","f-deny_paths","f-redact_patterns"].forEach((id) => v(id, ""));
+  $("f-disabled").checked = false;
+  $("f-insecure").checked = false;
+  $("f-auth-type").value = "key";
+  $("f-override").checked = false;
+  $("f-mode").value = "allow";
+  $("f-disclosure").value = "full";
+  $("f-redact_output").checked = false;
+  $("f-allow_meta").checked = false;
+  $("f-no_baseline").checked = false;
+  renderApps([]);
+  renderWarnings([]);
+  syncAuthFields(); syncPolicyFields();
+  $("result").textContent = "";
+  $("f-name").focus();
+});
+
+refresh().catch((err) => setStatus(String(err.message || err), true));
+</script>
+</body>
+</html>

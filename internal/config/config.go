@@ -6,10 +6,12 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -69,42 +71,73 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 // MarshalYAML renders the duration as a string.
 func (d Duration) MarshalYAML() (any, error) { return time.Duration(d).String(), nil }
 
+// MarshalJSON renders the duration as "30s" rather than a nanosecond count.
+func (d Duration) MarshalJSON() ([]byte, error) { return json.Marshal(time.Duration(d).String()) }
+
+// UnmarshalJSON accepts a duration string ("30s", "5m") or a plain number of
+// seconds, which is what an editor form naturally sends.
+func (d *Duration) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	if s == "null" || s == `""` {
+		*d = 0
+		return nil
+	}
+	if strings.HasPrefix(s, `"`) {
+		var str string
+		if err := json.Unmarshal(b, &str); err != nil {
+			return err
+		}
+		v, err := time.ParseDuration(str)
+		if err != nil {
+			return fmt.Errorf("invalid duration %q: %w", str, err)
+		}
+		*d = Duration(v)
+		return nil
+	}
+	secs, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return fmt.Errorf("invalid duration %s: expected a string like \"30s\" or a number of seconds", s)
+	}
+	*d = Duration(time.Duration(secs * float64(time.Second)))
+	return nil
+}
+
 // Spec is a policy specification. It is defined here (rather than in the
 // policy package) so that config has no dependency on the engine that
 // evaluates it.
 type Spec struct {
 	// Mode is one of allow, readonly or deny.
-	Mode string `yaml:"mode"`
+	Mode string `yaml:"mode" json:"mode"`
 	// Allow is the allowlist used when Mode is readonly. Entries are regular
 	// expressions anchored at the start of the command.
-	Allow []string `yaml:"allow_commands"`
+	Allow []string `yaml:"allow_commands,omitempty" json:"allow_commands,omitempty"`
 	// Deny is checked first, in every mode. Entries are regular expressions
 	// matched against the raw command string.
-	Deny []string `yaml:"deny_commands"`
+	Deny []string `yaml:"deny_commands,omitempty" json:"deny_commands,omitempty"`
 	// DenyPaths blocks file transfers whose remote path matches.
-	DenyPaths []string `yaml:"deny_paths"`
+	DenyPaths []string `yaml:"deny_paths,omitempty" json:"deny_paths,omitempty"`
 	// MaxOutputBytes caps the captured stdout+stderr per command.
-	MaxOutputBytes int `yaml:"max_output_bytes"`
+	MaxOutputBytes int `yaml:"max_output_bytes,omitempty" json:"max_output_bytes,omitempty"`
 	// Timeout caps a single command's wall-clock time.
-	Timeout Duration `yaml:"timeout"`
+	Timeout Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 	// DisableBaseline turns off the built-in destructive-command baseline
 	// deny list. Not recommended.
-	DisableBaseline bool `yaml:"disable_baseline"`
+	DisableBaseline bool `yaml:"disable_baseline,omitempty" json:"disable_baseline,omitempty"`
 	// AllowShellMetachars permits ; | & < > backticks, newlines and $( in
 	// readonly mode. It is off by default because an allow list over a raw
 	// shell string cannot otherwise stop `ls; rm -rf /tmp` from matching a
 	// `^ls` rule.
-	AllowShellMetachars bool `yaml:"allow_shell_metacharacters"`
+	AllowShellMetachars bool `yaml:"allow_shell_metacharacters,omitempty" json:"allow_shell_metacharacters,omitempty"`
 	// Disclosure is full, alias or blind. It limits what an agent learns about
 	// a host's identity: at alias and blind the address, port, user and proxy
 	// are omitted from every tool result. Credentials are never disclosed.
-	Disclosure string `yaml:"disclosure"`
+	Disclosure string `yaml:"disclosure,omitempty" json:"disclosure,omitempty"`
 	// RedactOutput replaces the host address, the user name and every
 	// RedactPatterns match in command output before it is returned. The audit
 	// log on disk keeps the original.
-	RedactOutput bool `yaml:"redact_output"`
+	RedactOutput bool `yaml:"redact_output,omitempty" json:"redact_output,omitempty"`
 	// RedactPatterns are extra regular expressions replaced with <redacted>.
-	RedactPatterns []string `yaml:"redact_patterns"`
+	RedactPatterns []string `yaml:"redact_patterns,omitempty" json:"redact_patterns,omitempty"`
 }
 
 // Defaults applied when neither the global nor the host spec sets a value.
@@ -184,44 +217,82 @@ func Merge(base Spec, over *Spec) Spec {
 // then the prompt.
 type Auth struct {
 	// Type is one of key, agent, password.
-	Type string `yaml:"type"`
+	Type string `yaml:"type" json:"type"`
 	// KeyPath is the private key file for Type=key.
-	KeyPath string `yaml:"key_path"`
+	KeyPath string `yaml:"key_path,omitempty" json:"key_path,omitempty"`
 	// KeyEnv holds a PEM private key inline (for Type=key with no file).
-	KeyEnv string `yaml:"key_env"`
+	KeyEnv string `yaml:"key_env,omitempty" json:"key_env,omitempty"`
 	// PassphraseEnv and PassphraseFile hold the passphrase for an encrypted key.
-	PassphraseEnv  string `yaml:"passphrase_env"`
-	PassphraseFile string `yaml:"passphrase_file"`
+	PassphraseEnv  string `yaml:"passphrase_env,omitempty" json:"passphrase_env,omitempty"`
+	PassphraseFile string `yaml:"passphrase_file,omitempty" json:"passphrase_file,omitempty"`
 	// PasswordEnv and PasswordFile hold the password for Type=password.
-	PasswordEnv  string `yaml:"password_env"`
-	PasswordFile string `yaml:"password_file"`
+	PasswordEnv  string `yaml:"password_env,omitempty" json:"password_env,omitempty"`
+	PasswordFile string `yaml:"password_file,omitempty" json:"password_file,omitempty"`
 }
 
 // HostKey describes how the remote host key is verified.
 type HostKey struct {
 	// KnownHosts is a known_hosts file. Defaults to ~/.ssh/known_hosts.
-	KnownHosts string `yaml:"known_hosts"`
+	KnownHosts string `yaml:"known_hosts,omitempty" json:"known_hosts,omitempty"`
 	// Fingerprints accepts specific SHA256 fingerprints (e.g. "SHA256:abc...").
-	Fingerprints []string `yaml:"fingerprints"`
+	Fingerprints []string `yaml:"fingerprints,omitempty" json:"fingerprints,omitempty"`
 	// Insecure disables host key verification. Never use in production.
-	Insecure bool `yaml:"insecure"`
+	Insecure bool `yaml:"insecure,omitempty" json:"insecure,omitempty"`
+}
+
+// App describes a workload running on a host. An agent that is asked to fix
+// "the payment service" needs to find both the machine and the knobs to touch;
+// apps are how it discovers that without being told an address.
+type App struct {
+	Name        string `yaml:"name" json:"name"`
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	// Kind is a free-form classifier: web, api, worker, cron, db, cache, queue,
+	// proxy, batch...
+	Kind string `yaml:"kind,omitempty" json:"kind,omitempty"`
+	// Unit is the systemd (or supervisor) unit name, so an agent can go straight
+	// to `systemctl status`.
+	Unit string `yaml:"unit,omitempty" json:"unit,omitempty"`
+	// Ports the app listens on.
+	Ports []int `yaml:"ports,omitempty" json:"ports,omitempty"`
+	// Logs are the log files or journal units worth reading.
+	Logs []string `yaml:"logs,omitempty" json:"logs,omitempty"`
+	// Path is the install or working directory.
+	Path string `yaml:"path,omitempty" json:"path,omitempty"`
+	// Tags are extra search terms (owner team, tier, protocol...).
+	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	// Runbook is a link to how to operate this app.
+	Runbook string `yaml:"runbook,omitempty" json:"runbook,omitempty"`
+}
+
+// searchText is everything a discovery query is matched against.
+func (a App) searchText() string {
+	parts := []string{a.Name, a.Description, a.Kind, a.Unit, a.Path, a.Runbook}
+	parts = append(parts, a.Tags...)
+	parts = append(parts, a.Logs...)
+	for _, p := range a.Ports {
+		parts = append(parts, strconv.Itoa(p))
+	}
+	return strings.ToLower(strings.Join(parts, " "))
 }
 
 // Host is a single SSH target.
 type Host struct {
-	Name        string            `yaml:"name"`
-	Addr        string            `yaml:"addr"`
-	Port        int               `yaml:"port"`
-	User        string            `yaml:"user"`
-	Tags        []string          `yaml:"tags"`
-	Description string            `yaml:"description"`
-	Auth        Auth              `yaml:"auth"`
-	HostKey     HostKey           `yaml:"host_key"`
-	ProxyJump   string            `yaml:"proxy_jump"`
-	WorkDir     string            `yaml:"work_dir"`
-	Env         map[string]string `yaml:"env"`
-	Policy      *Spec             `yaml:"policy"`
-	Disabled    bool              `yaml:"disabled"`
+	Name        string   `yaml:"name" json:"name"`
+	Addr        string   `yaml:"addr,omitempty" json:"addr,omitempty"`
+	Port        int      `yaml:"port,omitempty" json:"port,omitempty"`
+	User        string   `yaml:"user,omitempty" json:"user,omitempty"`
+	Tags        []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
+	// Apps are the workloads on this host. They are searchable and are shown to
+	// agents at every disclosure level except blind.
+	Apps      []App             `yaml:"apps,omitempty" json:"apps,omitempty"`
+	Auth      Auth              `yaml:"auth" json:"auth"`
+	HostKey   HostKey           `yaml:"host_key" json:"host_key"`
+	ProxyJump string            `yaml:"proxy_jump,omitempty" json:"proxy_jump,omitempty"`
+	WorkDir   string            `yaml:"work_dir,omitempty" json:"work_dir,omitempty"`
+	Env       map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	Policy    *Spec             `yaml:"policy,omitempty" json:"policy,omitempty"`
+	Disabled  bool              `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 }
 
 // AuthType returns the effective auth type, defaulting to key.
@@ -251,11 +322,11 @@ func (h Host) AddrPort() string {
 // AuditConfig controls the append-only audit log.
 type AuditConfig struct {
 	// Path is the JSONL audit file. Defaults to ~/.local/share/ssha/audit.jsonl.
-	Path string `yaml:"path"`
+	Path string `yaml:"path" json:"path"`
 	// StoreOutput stores stdout/stderr in the audit record.
-	StoreOutput *bool `yaml:"store_output"`
+	StoreOutput *bool `yaml:"store_output" json:"store_output"`
 	// MaxFieldBytes truncates stored stdout/stderr.
-	MaxFieldBytes int `yaml:"max_field_bytes"`
+	MaxFieldBytes int `yaml:"max_field_bytes" json:"max_field_bytes"`
 }
 
 // StoreOutputEnabled reports whether output capture is enabled (default true).
@@ -265,11 +336,11 @@ func (a AuditConfig) StoreOutputEnabled() bool {
 
 // Token scopes an HTTP MCP client to a subset of hosts.
 type Token struct {
-	Name     string   `yaml:"name"`
-	Value    string   `yaml:"value"`
-	ValueEnv string   `yaml:"value_env"`
-	Hosts    []string `yaml:"hosts"` // glob patterns, empty means all
-	Tags     []string `yaml:"tags"`
+	Name     string   `yaml:"name" json:"name"`
+	Value    string   `yaml:"value" json:"value"`
+	ValueEnv string   `yaml:"value_env" json:"value_env"`
+	Hosts    []string `yaml:"hosts" json:"hosts"` // glob patterns, empty means all
+	Tags     []string `yaml:"tags,omitempty" json:"tags,omitempty"`
 }
 
 // Resolve returns the token secret, reading from the environment if needed.
@@ -291,18 +362,18 @@ func (t Token) Resolve() (string, error) {
 type ServerConfig struct {
 	// HTTPAddr is the listen address for `ssha mcp --http`. Host 127.0.0.1 by
 	// default; exposing it beyond localhost requires tokens.
-	HTTPAddr string  `yaml:"http_addr"`
-	Tokens   []Token `yaml:"tokens"`
+	HTTPAddr string  `yaml:"http_addr" json:"http_addr"`
+	Tokens   []Token `yaml:"tokens" json:"tokens"`
 }
 
 // Config is the root document.
 type Config struct {
-	Version  int          `yaml:"version"`
-	Defaults Spec         `yaml:"defaults"`
-	Policy   Spec         `yaml:"policy"`
-	Audit    AuditConfig  `yaml:"audit"`
-	Server   ServerConfig `yaml:"server"`
-	Hosts    []Host       `yaml:"hosts"`
+	Version  int          `yaml:"version" json:"version"`
+	Defaults Spec         `yaml:"defaults" json:"defaults"`
+	Policy   Spec         `yaml:"policy" json:"policy"`
+	Audit    AuditConfig  `yaml:"audit" json:"audit"`
+	Server   ServerConfig `yaml:"server" json:"server"`
+	Hosts    []Host       `yaml:"hosts" json:"hosts"`
 
 	// path is the file this config was loaded from.
 	path string
@@ -375,6 +446,38 @@ func matchAny(patterns []string, name string) bool {
 	return false
 }
 
+// searchText is everything about a host that a discovery query matches against:
+// its name, description, tags and every app it runs.
+func (h *Host) searchText() string {
+	parts := append([]string{h.Name}, h.Description)
+	parts = append(parts, h.Tags...)
+	for _, a := range h.Apps {
+		parts = append(parts, a.searchText())
+	}
+	return strings.ToLower(strings.Join(parts, " "))
+}
+
+// MatchQuery reports whether every whitespace-separated word in query appears
+// somewhere in the host's searchable text. An empty query matches everything.
+func (h *Host) MatchQuery(query string) bool {
+	for _, word := range strings.Fields(strings.ToLower(query)) {
+		if !strings.Contains(h.searchText(), word) {
+			return false
+		}
+	}
+	return true
+}
+
+// App returns the named app, if the host runs it.
+func (h *Host) App(name string) (App, bool) {
+	for _, a := range h.Apps {
+		if strings.EqualFold(a.Name, name) {
+			return a, true
+		}
+	}
+	return App{}, false
+}
+
 // Validate checks structural invariants and normalizes defaults.
 func (c *Config) Validate() error {
 	if len(c.Hosts) == 0 {
@@ -420,6 +523,23 @@ func (c *Config) Validate() error {
 		}
 		if spec.Mode == ModeReadonly && len(spec.Allow) == 0 {
 			return fmt.Errorf("config: host %q: policy mode readonly requires at least one allow_commands entry", h.Name)
+		}
+		apps := make(map[string]struct{}, len(h.Apps))
+		for j := range h.Apps {
+			a := &h.Apps[j]
+			if a.Name == "" {
+				return fmt.Errorf("config: host %q: app #%d has no name", h.Name, j+1)
+			}
+			key := strings.ToLower(a.Name)
+			if _, dup := apps[key]; dup {
+				return fmt.Errorf("config: host %q: duplicate app name %q", h.Name, a.Name)
+			}
+			apps[key] = struct{}{}
+			for _, p := range a.Ports {
+				if p < 1 || p > 65535 {
+					return fmt.Errorf("config: host %q: app %q: invalid port %d", h.Name, a.Name, p)
+				}
+			}
 		}
 		c.byName[h.Name] = h
 	}

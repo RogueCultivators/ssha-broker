@@ -29,11 +29,13 @@ Usage:
 Commands:
   init                     write a starter config file
   hosts [list]             list configured hosts
-  hosts show <name>        show one host's details
+  hosts find <words...>    find the hosts running something, e.g. hosts find payment
+  hosts show <name>        show one host's details (including its apps)
   hosts test <name>...     verify host key, credentials and command execution
   host-key <host|addr>     fetch a host's public keys (onboarding aid)
   run <host> [--] <cmd>    run a command on one host
   multi [--tag T] <cmd>    run a command on several hosts in parallel
+  multi -q <words> <cmd>   ...on every host matching a search
   upload <host> <src> <dst>   upload a file (src "-" reads stdin)
   download <host> <src> <dst> download a file (dst "-" writes stdout)
   policy check <host> <cmd>   evaluate policy without executing
@@ -41,6 +43,7 @@ Commands:
   audit show <id>          show one audit record
   audit verify             verify the audit hash chain
   mcp                      serve MCP on stdio (for coding agents)
+  ui                       open a local web editor for this config
   skill install            install the agent skill into ~/.agents/skills
   skill print              print the agent skill to stdout
   version                  print the version
@@ -121,6 +124,8 @@ func Run(args []string, version string) int {
 		return a.cmdAudit(sub)
 	case "mcp":
 		return a.cmdMCP(sub)
+	case "ui":
+		return a.cmdUI(sub)
 	case "skill":
 		return a.cmdSkill(sub)
 	case "version", "--version", "-v":

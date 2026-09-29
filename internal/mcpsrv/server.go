@@ -27,9 +27,12 @@ import (
 const Instructions = `ssha is an SSH broker. The hosts, their credentials and the policy live on the ssha server; you never receive an SSH key.
 
 Workflow:
-1. Call ssh_list_hosts to see what you can reach. Each host reports its policy mode.
+1. Call ssh_list_hosts to see what you can reach. Each host reports its policy mode and the
+   applications it runs, with their systemd units, ports and log paths. Pass query to find
+   where something lives, e.g. query="payment" for a host running the payment-api app. Prefer
+   that over asking the user which machine to use.
 2. If a command might be restricted, call ssh_policy_check before running it.
-3. Call ssh_exec for one host, ssh_exec_many for several hosts at once.
+3. Call ssh_exec for one host, ssh_exec_many for several hosts at once (hosts, tags or query).
 4. Use ssh_upload / ssh_download to move files.
 
 Rules and behavior:
@@ -186,6 +189,7 @@ func isLoopback(addr string) bool {
 type listHostsInput struct {
 	Tags            []string `json:"tags,omitempty" jsonschema:"Only return hosts carrying all of these tags."`
 	NameGlob        []string `json:"name_glob,omitempty" jsonschema:"Only return hosts whose name matches one of these glob patterns, e.g. web-*."`
+	Query           string   `json:"query,omitempty" jsonschema:"Free-text search over host name, description, tags and the apps each host runs. Use this to find where a service lives, e.g. \"payment\"."`
 	IncludeDisabled bool     `json:"include_disabled,omitempty" jsonschema:"Also list hosts that are disabled in the ssha config."`
 }
 
@@ -206,6 +210,7 @@ type execInput struct {
 type execManyInput struct {
 	Hosts          []string `json:"hosts,omitempty" jsonschema:"Explicit host names to run on."`
 	Tags           []string `json:"tags,omitempty" jsonschema:"Select every host carrying all of these tags instead of naming hosts."`
+	Query          string   `json:"query,omitempty" jsonschema:"Select hosts by free-text search over name, description, tags and apps, e.g. payment."`
 	Command        string   `json:"command" jsonschema:"Shell command to run on each host."`
 	Cwd            string   `json:"cwd,omitempty" jsonschema:"Working directory for each host."`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty" jsonschema:"Per-command timeout, capped by each host's policy."`
@@ -271,10 +276,16 @@ type auditOutput struct {
 func registerTools(s *mcp.Server, be Backend) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "ssh_list_hosts",
-		Description: "List the SSH hosts this agent may reach, with tags, policy mode and limits. " +
-			"Call this first: every other tool takes a host name returned here.",
+		Description: "List the SSH hosts this agent may reach, with tags, the apps each one runs, policy mode and limits. " +
+			"Call this first: every other tool takes a host name returned here. " +
+			"Use query to find where a service lives, e.g. query=\"payment\" matches a host that runs an app named payment-api.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in listHostsInput) (*mcp.CallToolResult, listHostsOutput, error) {
-		hosts := be.Hosts(in.Tags, in.NameGlob, in.IncludeDisabled)
+		hosts := be.FindHosts(broker.HostQuery{
+			Tags:            in.Tags,
+			Names:           in.NameGlob,
+			Query:           in.Query,
+			IncludeDisabled: in.IncludeDisabled,
+		})
 		out := listHostsOutput{Hosts: hosts, Count: len(hosts)}
 		return textResult(renderHosts(hosts)), out, nil
 	})
@@ -307,6 +318,7 @@ func registerTools(s *mcp.Server, be Backend) {
 		results, err := be.ExecMany(ctx, broker.MultiExecRequest{
 			Hosts:       in.Hosts,
 			Tags:        in.Tags,
+			Query:       in.Query,
 			Command:     in.Command,
 			Cwd:         in.Cwd,
 			Timeout:     secondsToDuration(in.TimeoutSeconds),
@@ -471,16 +483,50 @@ func renderHosts(hosts []broker.HostInfo) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d host(s):\n", len(hosts))
 	for _, h := range hosts {
-		fmt.Fprintf(&b, "\n- %s  (%s@%s)\n", h.Name, h.User, h.Addr)
+		fmt.Fprintf(&b, "\n- %s", h.Name)
 		if h.Description != "" {
-			fmt.Fprintf(&b, "  %s\n", h.Description)
+			fmt.Fprintf(&b, "  %s", h.Description)
 		}
+		b.WriteString("\n")
 		if len(h.Tags) > 0 {
 			fmt.Fprintf(&b, "  tags: %s\n", strings.Join(h.Tags, ", "))
+		}
+		for _, app := range h.Apps {
+			fmt.Fprintf(&b, "  app: %s", app.Name)
+			if app.Kind != "" {
+				fmt.Fprintf(&b, " (%s)", app.Kind)
+			}
+			if app.Description != "" {
+				fmt.Fprintf(&b, " - %s", app.Description)
+			}
+			b.WriteString("\n")
+			var details []string
+			if app.Unit != "" {
+				details = append(details, "unit="+app.Unit)
+			}
+			if len(app.Ports) > 0 {
+				ports := make([]string, len(app.Ports))
+				for i, p := range app.Ports {
+					ports[i] = strconv.Itoa(p)
+				}
+				details = append(details, "ports="+strings.Join(ports, ","))
+			}
+			if app.Path != "" {
+				details = append(details, "path="+app.Path)
+			}
+			if len(app.Logs) > 0 {
+				details = append(details, "logs="+strings.Join(app.Logs, ","))
+			}
+			if len(details) > 0 {
+				fmt.Fprintf(&b, "       %s\n", strings.Join(details, " "))
+			}
 		}
 		fmt.Fprintf(&b, "  policy: %s, timeout: %s, max output: %d bytes\n", h.PolicyMode, h.Timeout, h.MaxOutputSize)
 		if len(h.Allow) > 0 {
 			fmt.Fprintf(&b, "  allowed: %s\n", strings.Join(h.Allow, " | "))
+		}
+		if h.Addr != "" {
+			fmt.Fprintf(&b, "  address: %s@%s\n", h.User, h.Addr)
 		}
 		if h.ProxyJump != "" {
 			fmt.Fprintf(&b, "  via jump host: %s\n", h.ProxyJump)

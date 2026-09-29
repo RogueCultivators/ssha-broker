@@ -26,6 +26,7 @@ import (
 	"ssha/internal/config"
 	"ssha/internal/mcpsrv"
 	"ssha/internal/sshx"
+	"ssha/internal/ui"
 	"ssha/skills"
 )
 
@@ -94,7 +95,7 @@ func (a *App) cmdInit(args []string) int {
 
 func (a *App) cmdHosts(args []string) int {
 	sub := "list"
-	if len(args) > 0 && (args[0] == "list" || args[0] == "show" || args[0] == "test") {
+	if len(args) > 0 && (args[0] == "list" || args[0] == "show" || args[0] == "test" || args[0] == "find") {
 		sub = args[0]
 		args = args[1:]
 	}
@@ -103,6 +104,9 @@ func (a *App) cmdHosts(args []string) int {
 	var tags, names multiFlag
 	all := fs.Bool("all", false, "include disabled hosts, or test every enabled host")
 	probe := fs.String("probe", "", "command used by `hosts test` (default: true)")
+	var query string
+	fs.StringVar(&query, "query", "", "free-text search over name, description, tags and apps")
+	fs.StringVar(&query, "q", "", "shorthand for --query")
 	fs.Var(&tags, "tag", "filter by tag (repeatable)")
 	fs.Var(&names, "name", "filter by name glob (repeatable)")
 	rest, perr := positionals(fs, args, 0)
@@ -129,13 +133,34 @@ func (a *App) cmdHosts(args []string) int {
 		return ExitOK
 	case "test":
 		return a.runHostTests(b, rest, tags, names, *all, *probe)
+	case "find":
+		if len(rest) == 0 {
+			return a.usageErr("usage: ssha hosts find <words...>")
+		}
+		return a.listHosts(b, tags, names, strings.Join(rest, " "), *all)
 	default:
-		hosts := b.Hosts(tags, names, *all)
-		a.emit(map[string]any{"hosts": hosts, "count": len(hosts)}, func() string {
-			return renderHostTable(hosts)
-		})
-		return ExitOK
+		return a.listHosts(b, tags, names, query, *all)
 	}
+}
+
+func (a *App) listHosts(b *broker.Broker, tags, names []string, query string, includeDisabled bool) int {
+	hosts := b.FindHosts(broker.HostQuery{
+		Tags:            tags,
+		Names:           names,
+		Query:           query,
+		IncludeDisabled: includeDisabled,
+	})
+	result := map[string]any{"hosts": hosts, "count": len(hosts)}
+	if query != "" {
+		result["query"] = query
+	}
+	a.emit(result, func() string {
+		if len(hosts) == 0 && query != "" {
+			return fmt.Sprintf("no host matches %q\n", query)
+		}
+		return renderHostTable(hosts)
+	})
+	return ExitOK
 }
 
 func (a *App) runHostTests(b *broker.Broker, positional, tags, globs []string, all bool, probe string) int {
@@ -208,14 +233,19 @@ func renderHostTable(hosts []broker.HostInfo) string {
 	}
 	var sb strings.Builder
 	tw := tabwriter.NewWriter(&sb, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tUSER\tADDR\tPOLICY\tTAGS\tDESCRIPTION")
+	fmt.Fprintln(tw, "NAME\tUSER\tADDR\tPOLICY\tTAGS\tAPPS\tDESCRIPTION")
 	for _, h := range hosts {
 		name := h.Name
 		if h.Disabled {
 			name += " (disabled)"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			name, h.User, h.Addr, h.PolicyMode, strings.Join(h.Tags, ","), h.Description)
+		apps := make([]string, 0, len(h.Apps))
+		for _, app := range h.Apps {
+			apps = append(apps, app.Name)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			name, h.User, h.Addr, h.PolicyMode, strings.Join(h.Tags, ","),
+			strings.Join(apps, ","), h.Description)
 	}
 	tw.Flush()
 	return sb.String()
@@ -237,6 +267,43 @@ func renderHostDetail(h broker.HostInfo) string {
 		row("address", fmt.Sprintf("%s@%s", h.User, h.Addr))
 	}
 	row("tags", strings.Join(h.Tags, ", "))
+	for i, app := range h.Apps {
+		header := app.Name
+		if app.Kind != "" {
+			header += " (" + app.Kind + ")"
+		}
+		if app.Description != "" {
+			header += " - " + app.Description
+		}
+		if i == 0 {
+			row("applications", header)
+		} else {
+			fmt.Fprintf(tw, "\t%s\n", header)
+		}
+		var details []string
+		if app.Unit != "" {
+			details = append(details, "unit="+app.Unit)
+		}
+		if len(app.Ports) > 0 {
+			ports := make([]string, len(app.Ports))
+			for j, p := range app.Ports {
+				ports[j] = strconv.Itoa(p)
+			}
+			details = append(details, "ports="+strings.Join(ports, ","))
+		}
+		if app.Path != "" {
+			details = append(details, "path="+app.Path)
+		}
+		if len(app.Logs) > 0 {
+			details = append(details, "logs="+strings.Join(app.Logs, ","))
+		}
+		if app.Runbook != "" {
+			details = append(details, "runbook="+app.Runbook)
+		}
+		if len(details) > 0 {
+			fmt.Fprintf(tw, "\t%s\n", strings.Join(details, "  "))
+		}
+	}
 	row("auth", h.Auth)
 	row("via jump host", h.ProxyJump)
 	row("work dir", h.WorkDir)
@@ -605,6 +672,8 @@ func (a *App) cmdMulti(args []string) int {
 	r.fs.Var(&hosts, "host", "host name (repeatable)")
 	r.fs.Var(&tags, "tag", "host tag (repeatable)")
 	concurrency := r.fs.Int("concurrency", 0, "maximum parallel connections")
+	multiQuery := r.fs.String("query", "", "select hosts by free-text search over name, description, tags and apps")
+	r.fs.StringVar(multiQuery, "q", "", "shorthand for --query")
 	rest, perr := positionals(r.fs, args, 0)
 	if perr != nil {
 		return a.usageErr(perr.Error())
@@ -616,8 +685,8 @@ func (a *App) cmdMulti(args []string) int {
 	if command == "" {
 		return a.usageErr("usage: ssha multi [--host H]... [--tag T]... [--] <command>")
 	}
-	if len(hosts) == 0 && len(tags) == 0 {
-		return a.usageErr("select hosts with --host or --tag")
+	if len(hosts) == 0 && len(tags) == 0 && *multiQuery == "" {
+		return a.usageErr("select hosts with --host, --tag or --query")
 	}
 
 	b, err := a.open()
@@ -629,6 +698,7 @@ func (a *App) cmdMulti(args []string) int {
 	results, err := b.ExecMany(context.Background(), broker.MultiExecRequest{
 		Hosts:          hosts,
 		Tags:           tags,
+		Query:          *multiQuery,
 		Command:        command,
 		Cwd:            r.cwd,
 		Timeout:        r.timeout,
@@ -1055,6 +1125,43 @@ func (a *App) cmdMCP(args []string) int {
 	} else {
 		err = mcpsrv.RunStdio(ctx, b, "ssha", a.Version)
 	}
+	if err != nil && !errors.Is(err, context.Canceled) {
+		return a.fail(err)
+	}
+	return ExitOK
+}
+
+// ---------------------------------------------------------------------------
+// ui
+// ---------------------------------------------------------------------------
+
+func (a *App) cmdUI(args []string) int {
+	fs := a.newFlagSet("ui")
+	addr := fs.String("addr", "127.0.0.1:8770", "listen address; loopback only")
+	open := fs.Bool("open", false, "open the editor in your browser")
+	if code, ok := a.parse(fs, args); !ok {
+		return code
+	}
+
+	path := a.ConfigPath
+	if path == "" {
+		if p, err := config.Discover(); err == nil {
+			path = p
+		} else {
+			path = "ssha.yaml"
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				if err := os.WriteFile(path, []byte(templateYAML), 0o600); err != nil {
+					return a.fail(err)
+				}
+				fmt.Fprintf(a.Stdout, "created %s from the template\n", path)
+			}
+		}
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	err := ui.Run(ctx, ui.Options{ConfigPath: path, Addr: *addr, Version: a.Version, Open: *open})
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return a.fail(err)
 	}
