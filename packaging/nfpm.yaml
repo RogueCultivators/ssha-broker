@@ -26,7 +26,7 @@ depends:
   - libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37
   - libgtk-3-0
 contents:
-  - src: ${BINARY}
+  - src: dist/ssha
     dst: /usr/bin/ssha
     file_info:
       mode: 0755

@@ -25,11 +25,13 @@ desktop:
 VERSION_NUM := $(shell git describe --tags --always 2>/dev/null | sed 's/^v//' || echo 0.0.0)
 
 package-deb: desktop
-	ARCH=$${ARCH:-amd64} VERSION=$(VERSION_NUM) BINARY=$(BINARY) \
+	mkdir -p dist && cp $(BINARY) dist/ssha
+	ARCH=$${ARCH:-amd64} VERSION=$(VERSION_NUM) \
 		nfpm package -f packaging/nfpm.yaml -p deb -t dist/
 
 package-appimage: desktop
-	./packaging/appimage/build.sh $(BINARY) $(VERSION_NUM) dist/$(BINARY)-$(VERSION_NUM)-$$(uname -m).AppImage
+	mkdir -p dist && cp $(BINARY) dist/ssha
+	./packaging/appimage/build.sh dist/ssha $(VERSION_NUM) dist/ssha-$(VERSION_NUM)-$$(uname -m).AppImage
 
 package-macos: desktop
 	./packaging/macos/bundle.sh $(BINARY) $(VERSION_NUM) dist/$(BINARY).app

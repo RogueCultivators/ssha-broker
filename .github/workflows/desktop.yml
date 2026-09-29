@@ -54,10 +54,12 @@ jobs:
           env -u DISPLAY -u WAYLAND_DISPLAY ./dist/ssha ui 2>&1 | tee /tmp/nodisplay.txt
           grep -q "没有图形环境" /tmp/nodisplay.txt
       - name: .deb
-        run: |
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.0
-          ARCH=amd64 VERSION='${{ needs.version.outputs.version }}' BINARY=dist/ssha \
-            "$(go env GOPATH)/bin/nfpm" package -f packaging/nfpm.yaml -p deb -t dist/
+        env:
+          ARCH: amd64
+          VERSION: ${{ needs.version.outputs.version }}
+        # `go run ...@version` rather than installing: it pins the version and
+        # does not care where GOBIN points.
+        run: go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.0 package -f packaging/nfpm.yaml -p deb -t dist/
       - name: AppImage
         run: |
           curl -sSLo /tmp/appimagetool \
@@ -68,13 +70,19 @@ jobs:
           export APPIMAGE_EXTRACT_AND_RUN=1
           ./packaging/appimage/build.sh dist/ssha '${{ needs.version.outputs.version }}' \
             "dist/ssha-${{ needs.version.outputs.version }}-x86_64.AppImage"
-      - name: verify the .deb
+      - name: verify the packages
         run: |
           deb=$(ls dist/*.deb | head -1)
           dpkg-deb -c "$deb" | grep -q 'usr/bin/ssha'
           dpkg-deb -c "$deb" | grep -q 'applications/ssha.desktop'
           dpkg-deb -c "$deb" | grep -q 'hicolor/512x512/apps/ssha.png'
           dpkg-deb -f "$deb" Depends
+          # The binary inside the package has to run, not just exist.
+          mkdir -p /tmp/deb && dpkg-deb -x "$deb" /tmp/deb
+          /tmp/deb/usr/bin/ssha version
+          # And so does the AppImage.
+          appimage=$(ls dist/*.AppImage | head -1)
+          APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" version
       - uses: actions/upload-artifact@v6
         with:
           name: linux-packages
@@ -93,13 +101,16 @@ jobs:
           cache: true
       - name: toolchain
         run: |
-          # MSYS2 ships with the runner image and has the mingw-w64 C++ toolchain
-          # the WebView2 backend needs.
-          echo "C:\msys64\mingw64\bin" >> $env:GITHUB_PATH
-          & "C:\msys64\mingw64\bin\g++.exe" --version | Select-Object -First 1
+          # The C++ toolchain for the WebView2 backend, and windres for the icon.
+          choco install mingw --no-progress -y
+          $bin = (Get-ChildItem -Path C:\ProgramData\chocolatey\lib\mingw -Recurse -Filter g++.exe |
+                  Select-Object -First 1).DirectoryName
+          if (-not $bin) { throw "mingw was installed but g++.exe was not found" }
+          echo $bin >> $env:GITHUB_PATH
+          & "$bin\g++.exe" --version | Select-Object -First 1
+          & "$bin\windres.exe" --version | Select-Object -First 1
       - name: icon and version resource
-        run: |
-          & "C:\msys64\mingw64\bin\windres.exe" -i packaging/windows/ssha.rc -o cmd/ssha/rsrc_windows_amd64.syso
+        run: windres -i packaging/windows/ssha.rc -o cmd/ssha/rsrc_windows_amd64.syso
       - name: build
         env:
           CGO_ENABLED: "1"
@@ -120,6 +131,8 @@ jobs:
           $v = '${{ needs.version.outputs.version }}'
           Compress-Archive -Path dist/ssha.exe, dist/WebView2Loader.dll `
             -DestinationPath "dist/ssha-$v-windows-x64.zip"
+      - name: smoke test
+        run: dist\ssha.exe version
       - uses: actions/upload-artifact@v6
         with:
           name: windows-package
@@ -144,6 +157,10 @@ jobs:
           # the bundle launchable on a machine that downloads it.
           codesign --force --deep --sign - dist/ssha.app
           codesign --verify --verbose dist/ssha.app
+      - name: smoke test
+        run: |
+          plutil -lint dist/ssha.app/Contents/Info.plist
+          dist/ssha.app/Contents/MacOS/ssha version
       - name: package
         run: |
           v='${{ needs.version.outputs.version }}'
