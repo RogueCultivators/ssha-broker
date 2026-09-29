@@ -32,7 +32,11 @@ check() { # check <description> <expected-exit> <actual-exit>
 contains() { # contains <description> <needle> <haystack>
   # A herestring, not a pipe: with `set -o pipefail`, `grep -q` exiting on the
   # first match can kill the writer with SIGPIPE and mark the pipeline failed.
-  if grep -qF -- "$2" <<<"$3"; then pass "$1"; else fail "$1: %q not found in output" "$2"; head -20 <<<"$3"; fi
+  if grep -qF -- "$2" <<<"$3"; then pass "$1"; else fail "$1: \"$2\" not found in output"; head -20 <<<"$3"; fi
+}
+
+lacks() { # lacks <description> <needle> <haystack>
+  if grep -qF -- "$2" <<<"$3"; then fail "$1: \"$2\" should not be in output"; head -20 <<<"$3"; else pass "$1"; fi
 }
 
 cleanup() {
@@ -169,6 +173,52 @@ EOF
 printf 'e2e-secret\n' > "$WORK/password.txt"
 chmod 600 "$WORK/password.txt"
 export SSHA_CONFIG="$WORK/ssha.yaml"
+
+# ---------------------------------------------------------------------------
+log "cli: help"
+
+# A command's own flags only appear here; the general usage lists commands. This
+# is how --headless is discoverable, and asking for help is not a usage error.
+out=$("$BIN" ui --help 2>&1); code=$?
+check "ui --help exits successfully" 0 "$code"
+contains "ui --help lists --headless" "--headless" "$out"
+lacks "ui --help does not print an internal error" "flag: help requested" "$out"
+
+out=$("$BIN" run --help 2>&1); code=$?
+check "run --help exits successfully" 0 "$code"
+contains "run --help lists --dry-run" "--dry-run" "$out"
+
+out=$("$BIN" --help 2>&1); code=$?
+check "the global --help exits successfully" 0 "$code"
+contains "the global --help lists commands" "audit verify" "$out"
+
+# A command with subcommands dispatches on its first argument, so help there has
+# to be answered before the dispatch, not reported as an unknown subcommand.
+for group in hosts audit policy skill; do
+  out=$("$BIN" "$group" --help 2>&1); code=$?
+  check "$group --help exits successfully" 0 "$code"
+  contains "$group --help lists its subcommands" "Subcommands" "$out"
+  lacks "$group --help is not an unknown subcommand" "unknown" "$out"
+done
+
+# Every command answers --help with exit 0: a help request is not a mistake.
+for c in init hosts host-key run multi upload download policy audit mcp ui skill; do
+  out=$("$BIN" "$c" --help 2>&1); code=$?
+  check "$c --help exits successfully" 0 "$code"
+  lacks "$c --help is not an internal error" "flag: help requested" "$out"
+done
+
+# ...including the nested ones.
+for c in "hosts test" "hosts show" "hosts import" "audit ls" "audit show" "skill install" "skill print"; do
+  # shellcheck disable=SC2086
+  out=$("$BIN" $c --help 2>&1); code=$?
+  check "$c --help exits successfully" 0 "$code"
+done
+
+# An unknown flag is still a usage error, not a help request.
+out=$("$BIN" run --nonsense 2>&1); code=$?
+check "an unknown flag is a usage error" 2 "$code"
+contains "and it says which flag" "nonsense" "$out"
 
 # ---------------------------------------------------------------------------
 log "cli: hosts and policy"

@@ -96,7 +96,20 @@ func (a *App) cmdInit(args []string) int {
 // hosts
 // ---------------------------------------------------------------------------
 
+// hostGroup is the help for `ssha hosts --help`.
+const hostGroup = `Subcommands:
+  hosts [list]             list configured hosts (the default)
+  hosts find <words...>    find a host by its note, e.g. hosts find payment
+  hosts show <name>        show one host's details, including its note
+  hosts test <name>...     verify host key, credentials and command execution
+  hosts import [file]      read hosts from an ssh_config file
+
+Flags are per subcommand: try 'ssha hosts test --help'.`
+
 func (a *App) cmdHosts(args []string) int {
+	if a.groupHelp("hosts", hostGroup, args) {
+		return ExitOK
+	}
 	sub := "list"
 	if len(args) > 0 && (args[0] == "list" || args[0] == "show" || args[0] == "test" || args[0] == "find" || args[0] == "import") {
 		sub = args[0]
@@ -108,7 +121,7 @@ func (a *App) cmdHosts(args []string) int {
 	all := fs.Bool("all", false, "include disabled hosts, or test every enabled host")
 	probe := fs.String("probe", "", "command used by `hosts test` (default: true)")
 	var query string
-	fs.StringVar(&query, "query", "", "free-text search over name, description, tags and apps")
+	fs.StringVar(&query, "query", "", "free-text search over name, note and tags")
 	fs.StringVar(&query, "q", "", "shorthand for --query")
 	fs.Var(&tags, "tag", "filter by tag (repeatable)")
 	fs.Var(&names, "name", "filter by name glob (repeatable)")
@@ -118,9 +131,9 @@ func (a *App) cmdHosts(args []string) int {
 	overwrite := fs.Bool("overwrite", false, "also refresh hosts that already exist in the config")
 	var only multiFlag
 	fs.Var(&only, "only", "only import aliases matching this glob (repeatable)")
-	rest, perr := positionals(fs, args, 0)
-	if perr != nil {
-		return a.usageErr(perr.Error())
+	rest, code, ok := a.positionals(fs, args, 0)
+	if !ok {
+		return code
 	}
 
 	b, err := a.open()
@@ -320,9 +333,9 @@ func (a *App) cmdHostKey(args []string) int {
 	write := fs.Bool("write", false, "append the keys to the known_hosts file")
 	knownHosts := fs.String("known-hosts", "", "known_hosts file to consider (default: from the host config, else ~/.ssh/known_hosts)")
 	timeout := fs.Duration("timeout", 10*time.Second, "connection timeout")
-	rest, perr := positionals(fs, args, 1)
-	if perr != nil {
-		return a.usageErr(perr.Error())
+	rest, code, ok := a.positionals(fs, args, 1)
+	if !ok {
+		return code
 	}
 	if len(rest) != 1 {
 		return a.usageErr("usage: ssha host-key <name|addr>[:port] [--write] [--known-hosts PATH]")
@@ -693,8 +706,8 @@ func (a *App) cmdRun(args []string) int {
 		return code
 	}
 	host, tail, perr := splitHost(r.fs, args)
-	if perr != nil {
-		return a.usageErr(perr.Error())
+	if code, ok := a.parseErr(r.fs, perr); !ok {
+		return code
 	}
 	if host == "" {
 		return a.usageErr("usage: ssha run <host> [flags] [--] <command>")
@@ -796,11 +809,11 @@ func (a *App) cmdMulti(args []string) int {
 	r.fs.Var(&hosts, "host", "host name (repeatable)")
 	r.fs.Var(&tags, "tag", "host tag (repeatable)")
 	concurrency := r.fs.Int("concurrency", 0, "maximum parallel connections")
-	multiQuery := r.fs.String("query", "", "select hosts by free-text search over name, description, tags and apps")
+	multiQuery := r.fs.String("query", "", "select hosts by free-text search over name, note and tags")
 	r.fs.StringVar(multiQuery, "q", "", "shorthand for --query")
-	rest, perr := positionals(r.fs, args, 0)
-	if perr != nil {
-		return a.usageErr(perr.Error())
+	rest, ec, ok := a.positionals(r.fs, args, 0)
+	if !ok {
+		return ec
 	}
 	command := r.cmd
 	if command == "" {
@@ -883,9 +896,9 @@ func renderMultiText(results []*broker.ExecResult) string {
 func (a *App) cmdUpload(args []string) int {
 	fs := a.newFlagSet("upload")
 	mode := fs.String("mode", "", "octal file mode, e.g. 0644")
-	pos, err := positionals(fs, args, 3)
-	if err != nil {
-		return a.usageErr(err.Error())
+	pos, code, ok := a.positionals(fs, args, 3)
+	if !ok {
+		return code
 	}
 	if len(pos) != 3 {
 		return a.usageErr("usage: ssha upload <host> <local|-> <remote> [--mode 0644]")
@@ -941,9 +954,9 @@ func (a *App) cmdUpload(args []string) int {
 func (a *App) cmdDownload(args []string) int {
 	fs := a.newFlagSet("download")
 	maxBytes := fs.Int64("max-bytes", 0, "maximum bytes to read (default 1 MiB)")
-	pos, err := positionals(fs, args, 3)
-	if err != nil {
-		return a.usageErr(err.Error())
+	pos, code, ok := a.positionals(fs, args, 3)
+	if !ok {
+		return code
 	}
 	if len(pos) != 3 {
 		return a.usageErr("usage: ssha download <host> <remote> <local|-> [--max-bytes N]")
@@ -1004,13 +1017,16 @@ func parseOctalMode(s string) (os.FileMode, error) {
 // ---------------------------------------------------------------------------
 
 func (a *App) cmdPolicy(args []string) int {
+	if a.groupHelp("policy", "Subcommands:\n  policy check <host> [--] <command>   evaluate policy without executing", args) {
+		return ExitOK
+	}
 	fs := a.newFlagSet("policy")
 	if len(args) == 0 || args[0] != "check" {
 		return a.usageErr("usage: ssha policy check <host> [--] <command>")
 	}
 	host, tail, perr := splitHost(fs, args[1:])
-	if perr != nil {
-		return a.usageErr(perr.Error())
+	if code, ok := a.parseErr(fs, perr); !ok {
+		return code
 	}
 	if host == "" || len(tail) == 0 {
 		return a.usageErr("usage: ssha policy check <host> [--] <command>")
@@ -1043,7 +1059,18 @@ func (a *App) cmdPolicy(args []string) int {
 // audit
 // ---------------------------------------------------------------------------
 
+// auditGroup is the help for `ssha audit --help`.
+const auditGroup = `Subcommands:
+  audit ls [flags]     list recent audit records
+  audit show <id>      show one audit record
+  audit verify         verify the audit hash chain
+
+Flags are per subcommand: try 'ssha audit ls --help'.`
+
 func (a *App) cmdAudit(args []string) int {
+	if a.groupHelp("audit", auditGroup, args) {
+		return ExitOK
+	}
 	if len(args) == 0 {
 		return a.usageErr("usage: ssha audit <ls|show|verify>")
 	}
@@ -1121,9 +1148,9 @@ func renderAuditTable(records []audit.Record) string {
 
 func (a *App) cmdAuditShow(args []string) int {
 	fs := a.newFlagSet("audit show")
-	rest, perr := positionals(fs, args, 1)
-	if perr != nil {
-		return a.usageErr(perr.Error())
+	rest, code, ok := a.positionals(fs, args, 1)
+	if !ok {
+		return code
 	}
 	if len(rest) != 1 {
 		return a.usageErr("usage: ssha audit show <id>")
@@ -1261,9 +1288,9 @@ func (a *App) cmdMCP(args []string) int {
 
 func (a *App) cmdUI(args []string) int {
 	fs := a.newFlagSet("ui")
-	headless := fs.Bool("headless", false, "不打开窗口，改成一个本地 HTTP 服务并打印地址（给服务器、CI、SSH 转发用）")
-	addr := fs.String("addr", "127.0.0.1:8770", "headless 模式的监听地址，只能是回环地址")
-	tokenFile := fs.String("token-file", "", "headless 模式下把访问 token 存在这个文件里")
+	headless := fs.Bool("headless", false, "serve the editor on a local port instead of opening a window")
+	addr := fs.String("addr", "127.0.0.1:8770", "loopback address to listen on in headless mode")
+	tokenFile := fs.String("token-file", "", "keep the access token in this file instead of a fresh one per run")
 	if code, ok := a.parse(fs, args); !ok {
 		return code
 	}
@@ -1316,6 +1343,9 @@ func (a *App) cmdUI(args []string) int {
 // ---------------------------------------------------------------------------
 
 func (a *App) cmdSkill(args []string) int {
+	if a.groupHelp("skill", "Subcommands:\n  skill install [dir]   install the agent skill into a skills directory\n  skill print           print the agent skill to stdout", args) {
+		return ExitOK
+	}
 	if len(args) == 0 {
 		return a.usageErr("usage: ssha skill <install|print>")
 	}
