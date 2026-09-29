@@ -1,0 +1,151 @@
+# ssha configuration
+#
+# This file is the trust boundary: it decides what an AI agent may do on which
+# server. It contains no secrets (credentials are referenced by path or read
+# from environment variables), but keep it readable only by the user who runs
+# `ssha`. It is gitignored by default; commit it only if your team agrees.
+#
+# Inspect what a host allows with:  ssha hosts show <name>
+# Test a command without running it: ssha policy check <name> -- <command>
+
+version: 1
+
+# ---------------------------------------------------------------------------
+# Global defaults. A host may override any policy field; overrides are merged
+# on top of these values.
+# ---------------------------------------------------------------------------
+defaults:
+  mode: allow              # allow | readonly | deny
+  timeout: 60s             # per-command wall clock limit
+  max_output_bytes: 262144  # 256 KiB of captured stdout+stderr
+
+# The default policy applied to every host. Prefer tight, per-host overrides.
+policy:
+  mode: allow
+  # Regular expressions, matched anywhere in the command. Deny always wins
+  # over allow. Deny lists are easy to bypass; for an untrusted agent prefer
+  # mode: readonly with an explicit allow list.
+  deny_commands:
+    - 'rm\s+-rf\s+/'
+    - '>\s*/dev/sd'
+    - '\bmkfs\b'
+    - '\b(shutdown|reboot|poweroff)\b'
+    - '\bchmod\s+-R\s+000\s+/'
+    - '\biptables\s+-F\b'
+  # Remote paths that may not be uploaded to or downloaded from.
+  deny_paths:
+    - '^/etc/shadow$'
+    - '/\.ssh/id_'
+
+# ---------------------------------------------------------------------------
+# Audit log. Append-only JSON Lines with a SHA-256 hash chain.
+# Verify it with:  ssha audit verify
+# ---------------------------------------------------------------------------
+audit:
+  path: ~/.local/share/ssha/audit.jsonl
+  store_output: true       # record stdout/stderr in the log
+  max_field_bytes: 65536   # truncate each stored stream at 64 KiB
+
+# ---------------------------------------------------------------------------
+# HTTP MCP transport (`ssha mcp --http`). Tokens scope a client to a subset of
+# hosts. Without tokens, `ssha mcp --http` refuses any non-loopback address.
+# ---------------------------------------------------------------------------
+server:
+  http_addr: 127.0.0.1:8765
+  # tokens:
+  #   - name: ci
+  #     value_env: SSHA_TOKEN_CI
+  #     tags: [staging]
+  #   - name: oncall
+  #     value_env: SSHA_TOKEN_ONCALL
+  #     hosts: ["web-*", "db-*"]
+
+# ---------------------------------------------------------------------------
+# Hosts
+# ---------------------------------------------------------------------------
+hosts:
+  # A read-only production host: the agent may only look, never touch.
+  - name: prod-web
+    description: Public web frontend (nginx). Read-only for agents.
+    addr: 10.0.0.10
+    port: 22
+    user: deploy
+    tags: [prod, web]
+    auth:
+      type: key
+      key_path: ~/.ssh/id_ed25519
+      # passphrase_env: SSHA_KEY_PASSPHRASE
+    host_key:
+      known_hosts: ~/.ssh/known_hosts
+      # fingerprints: ["SHA256:abc123..."]   # alternative to known_hosts
+      # insecure: false                       # never enable in production
+    work_dir: /srv/app
+    policy:
+      mode: readonly
+      # readonly rejects shell metacharacters by default (; | & < > ` newline
+      # $(...)) so that `ls; rm -rf /tmp` cannot pass a `^ls` rule. Set this to
+      # true only if you need pipelines inside the allow list.
+      allow_shell_metacharacters: false
+      allow_commands:
+        - '^ls\b'
+        - '^cat\b'
+        - '^tail\b'
+        - '^head\b'
+        - '^grep\b'
+        - '^df\b'
+        - '^free\b'
+        - '^uptime\b'
+        - '^ps\b'
+        - '^systemctl\s+status\b'
+        - '^journalctl\b'
+        - '^docker\s+(ps|logs|inspect)\b'
+      timeout: 30s
+      max_output_bytes: 131072
+
+  # A staging host reachable only through a bastion.
+  - name: staging-app
+    description: Staging application server, reached via the bastion.
+    addr: 10.1.0.20
+    user: deploy
+    tags: [staging, app]
+    proxy_jump: bastion
+    auth:
+      type: key
+      key_path: ~/.ssh/id_ed25519
+    host_key:
+      known_hosts: ~/.ssh/known_hosts
+    work_dir: /srv/app
+    env:
+      APP_ENV: staging
+    policy:
+      mode: allow
+      deny_commands:
+        - 'rm\s+-rf\s+/'
+        - '\bmkfs\b'
+      timeout: 120s
+
+  - name: bastion
+    description: Jump host. Not a command target.
+    addr: bastion.example.com
+    user: jump
+    tags: [infra]
+    auth:
+      type: agent          # use the local ssh-agent: no key file on disk
+    host_key:
+      known_hosts: ~/.ssh/known_hosts
+    policy:
+      mode: deny           # agents must not run commands on the bastion itself
+
+  # A host that authenticates with a password taken from the environment.
+  - name: legacy-db
+    description: Legacy database host, password auth.
+    addr: 10.0.0.30
+    user: dba
+    tags: [db]
+    auth:
+      type: password
+      password_env: SSHA_LEGACY_DB_PASSWORD
+    host_key:
+      insecure: true       # TODO: pin the fingerprint instead
+    policy:
+      mode: deny

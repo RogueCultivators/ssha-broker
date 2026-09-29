@@ -1,0 +1,18 @@
+# Build output
+/ssha
+/dist/
+*.exe
+*.test
+*.out
+
+# Local configuration and secrets - never commit these
+ssha.yaml
+ssha.yml
+*.age
+*.pem
+.env
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
