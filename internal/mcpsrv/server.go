@@ -32,7 +32,8 @@ Workflow:
    where something lives, e.g. query="payment" for a host running the payment-api app. Prefer
    that over asking the user which machine to use.
 2. If a command might be restricted, call ssh_policy_check before running it.
-3. Call ssh_exec for one host, ssh_exec_many for several hosts at once (hosts, tags or query).
+3. Call ssh_exec for one host, ssh_exec_many for several hosts at once (hosts, tags, query or app).
+   Pass app whenever you know which application you are working on.
 4. Use ssh_upload / ssh_download to move files.
 
 Rules and behavior:
@@ -48,6 +49,9 @@ Rules and behavior:
   tool results, and any that appear in output, errors or audit records are replaced with
   <host>, <user> or <redacted>. Treat those as opaque identifiers, not as missing data.
   Do not try to discover the real values (no /etc/hosts, hostname -I, ip a, curl ifconfig.me).
+- When a command is for a specific application, pass app="<name>" (from the host's apps list). It is
+  recorded in the audit log and rejected if the host does not run that application, so the log stays
+  answerable per service. ssh_audit can then be filtered by app.
 - Never pass --reveal to the ssha CLI: that flag disables identity hiding and is for the
   human operator only.`
 
@@ -201,6 +205,7 @@ type listHostsOutput struct {
 type execInput struct {
 	Host           string            `json:"host" jsonschema:"Target host name, exactly as returned by ssh_list_hosts."`
 	Command        string            `json:"command" jsonschema:"Shell command to run on the remote host."`
+	App            string            `json:"app,omitempty" jsonschema:"Name the application from the host's apps list that this command is for. It is recorded in the audit log, and rejected if the host does not run it."`
 	Cwd            string            `json:"cwd,omitempty" jsonschema:"Working directory. Defaults to the host's configured work_dir, otherwise the login directory."`
 	Env            map[string]string `json:"env,omitempty" jsonschema:"Extra environment variables to export before the command."`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty" jsonschema:"Per-command timeout. Can only shorten the host's policy limit. 0 means use the policy limit."`
@@ -211,6 +216,7 @@ type execManyInput struct {
 	Hosts          []string `json:"hosts,omitempty" jsonschema:"Explicit host names to run on."`
 	Tags           []string `json:"tags,omitempty" jsonschema:"Select every host carrying all of these tags instead of naming hosts."`
 	Query          string   `json:"query,omitempty" jsonschema:"Select hosts by free-text search over name, description, tags and apps, e.g. payment."`
+	App            string   `json:"app,omitempty" jsonschema:"Restrict to hosts running this application and record it against every command, e.g. checkout-api."`
 	Command        string   `json:"command" jsonschema:"Shell command to run on each host."`
 	Cwd            string   `json:"cwd,omitempty" jsonschema:"Working directory for each host."`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty" jsonschema:"Per-command timeout, capped by each host's policy."`
@@ -258,6 +264,7 @@ type policyCheckInput struct {
 
 type auditInput struct {
 	Host     string `json:"host,omitempty" jsonschema:"Only return records for this host."`
+	App      string `json:"app,omitempty" jsonschema:"Only return records logged against this application, e.g. checkout-api."`
 	Type     string `json:"type,omitempty" jsonschema:"Filter by operation: exec, upload or download."`
 	Decision string `json:"decision,omitempty" jsonschema:"Filter by decision: allowed or denied."`
 	Limit    int    `json:"limit,omitempty" jsonschema:"Maximum records to return, newest last. Defaults to 50."`
@@ -298,6 +305,7 @@ func registerTools(s *mcp.Server, be Backend) {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in execInput) (*mcp.CallToolResult, broker.ExecResult, error) {
 		res, err := be.Exec(ctx, broker.ExecRequest{
 			Host:           in.Host,
+			App:            in.App,
 			Command:        in.Command,
 			Cwd:            in.Cwd,
 			Env:            in.Env,
@@ -319,6 +327,7 @@ func registerTools(s *mcp.Server, be Backend) {
 			Hosts:       in.Hosts,
 			Tags:        in.Tags,
 			Query:       in.Query,
+			App:         in.App,
 			Command:     in.Command,
 			Cwd:         in.Cwd,
 			Timeout:     secondsToDuration(in.TimeoutSeconds),
@@ -445,6 +454,7 @@ func registerTools(s *mcp.Server, be Backend) {
 		}
 		records, err := be.AuditQuery(audit.Filter{
 			Host:     in.Host,
+			App:      in.App,
 			Type:     in.Type,
 			Decision: in.Decision,
 		}, limit)

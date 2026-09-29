@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,6 +26,7 @@ import (
 	"ssha/internal/broker"
 	"ssha/internal/config"
 	"ssha/internal/mcpsrv"
+	"ssha/internal/sshconfig"
 	"ssha/internal/sshx"
 	"ssha/internal/ui"
 	"ssha/skills"
@@ -95,7 +97,7 @@ func (a *App) cmdInit(args []string) int {
 
 func (a *App) cmdHosts(args []string) int {
 	sub := "list"
-	if len(args) > 0 && (args[0] == "list" || args[0] == "show" || args[0] == "test" || args[0] == "find") {
+	if len(args) > 0 && (args[0] == "list" || args[0] == "show" || args[0] == "test" || args[0] == "find" || args[0] == "import") {
 		sub = args[0]
 		args = args[1:]
 	}
@@ -109,6 +111,12 @@ func (a *App) cmdHosts(args []string) int {
 	fs.StringVar(&query, "q", "", "shorthand for --query")
 	fs.Var(&tags, "tag", "filter by tag (repeatable)")
 	fs.Var(&names, "name", "filter by name glob (repeatable)")
+	importFile := fs.String("file", "", "ssh config file to import (default ~/.ssh/config)")
+	policyMode := fs.String("policy-mode", config.ModeDeny, "policy for imported hosts: deny | readonly | allow")
+	dryRun := fs.Bool("dry-run", false, "show what would be imported without writing")
+	overwrite := fs.Bool("overwrite", false, "also refresh hosts that already exist in the config")
+	var only multiFlag
+	fs.Var(&only, "only", "only import aliases matching this glob (repeatable)")
 	rest, perr := positionals(fs, args, 0)
 	if perr != nil {
 		return a.usageErr(perr.Error())
@@ -138,6 +146,8 @@ func (a *App) cmdHosts(args []string) int {
 			return a.usageErr("usage: ssha hosts find <words...>")
 		}
 		return a.listHosts(b, tags, names, strings.Join(rest, " "), *all)
+	case "import":
+		return a.runHostImport(b, *importFile, *policyMode, tags, only, *dryRun, *overwrite)
 	default:
 		return a.listHosts(b, tags, names, query, *all)
 	}
@@ -539,12 +549,155 @@ func parseHostPort(spec string, defaultPort int) (string, int, error) {
 }
 
 // ---------------------------------------------------------------------------
+// hosts import
+// ---------------------------------------------------------------------------
+
+// runHostImport turns ~/.ssh/config into ssha hosts. Everything it cannot
+// represent (Match blocks, ProxyCommand) is reported rather than dropped
+// silently, and nothing is granted by default: imported hosts start denied so
+// the operator decides what an agent may do on each one.
+func (a *App) runHostImport(b *broker.Broker, file, mode string, tags, only []string, dryRun, overwrite bool) int {
+	switch mode {
+	case config.ModeDeny, config.ModeReadonly, config.ModeAllow:
+	default:
+		return a.usageErr(fmt.Sprintf("--policy-mode must be deny, readonly or allow, got %q", mode))
+	}
+	if file == "" {
+		file = sshconfig.DefaultPath()
+	}
+	file = config.ExpandHome(file)
+	if file == "" {
+		return a.fail(errors.New("cannot locate ~/.ssh/config; pass --file"))
+	}
+
+	res, err := sshconfig.Parse(file)
+	if err != nil {
+		return a.fail(err)
+	}
+	entries := res.Hosts
+	if len(only) > 0 {
+		kept := entries[:0]
+		for _, e := range entries {
+			for _, pattern := range only {
+				if ok, _ := filepath.Match(pattern, e.Alias); ok {
+					kept = append(kept, e)
+					break
+				}
+			}
+		}
+		entries = kept
+	}
+	if len(entries) == 0 {
+		fmt.Fprintf(a.Stdout, "nothing to import from %s\n", file)
+		return ExitOK
+	}
+
+	converted := sshconfig.Convert(entries, sshconfig.ConvertOptions{PolicyMode: mode, Tags: tags})
+	hosts := make([]config.Host, 0, len(converted))
+	var perHost []string
+	for _, c := range converted {
+		hosts = append(hosts, c.Host)
+		perHost = append(perHost, c.Warnings...)
+	}
+
+	cfg := b.Config()
+	var add, refresh, skip []config.Host
+	for _, h := range hosts {
+		if _, err := cfg.Host(h.Name); err == nil {
+			if overwrite {
+				refresh = append(refresh, h)
+			} else {
+				skip = append(skip, h)
+			}
+			continue
+		}
+		add = append(add, h)
+	}
+
+	write := func(list []config.Host) error {
+		if dryRun || len(list) == 0 {
+			return nil
+		}
+		return config.UpsertHosts(cfg.Path(), list)
+	}
+	if err := write(add); err != nil {
+		return a.fail(err)
+	}
+	if err := write(refresh); err != nil {
+		return a.fail(err)
+	}
+
+	verb := "imported"
+	if dryRun {
+		verb = "would import"
+	}
+	result := map[string]any{
+		"file":        file,
+		"would_write": dryRun,
+		"added":       names(add),
+		"updated":     names(refresh),
+		"skipped":     names(skip),
+		"warnings":    append(append([]string{}, res.Warnings...), perHost...),
+	}
+	a.emit(result, func() string {
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "%s %d host(s) from %s with policy mode %s\n\n", verb, len(add), file, mode)
+		if len(add)+len(refresh) > 0 {
+			tw := tabwriter.NewWriter(&sb, 0, 4, 2, ' ', 0)
+			fmt.Fprintln(tw, "HOST\tADDR\tUSER\tAUTH\tVIA")
+			for _, h := range append(append([]config.Host{}, add...), refresh...) {
+				via := h.ProxyJump
+				if via == "" {
+					via = "-"
+				}
+				addr := h.Addr
+				if h.Port != 0 && h.Port != 22 {
+					addr = fmt.Sprintf("%s:%d", h.Addr, h.Port)
+				}
+				user := h.User
+				if user == "" {
+					user = "-"
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", h.Name, addr, user, h.Auth.Type, via)
+			}
+			tw.Flush()
+		}
+		if len(skip) > 0 {
+			fmt.Fprintf(&sb, "\nskipped %d already-configured host(s): %s\n", len(skip), strings.Join(names(skip), ", "))
+			sb.WriteString("pass --overwrite to refresh them\n")
+		}
+		if len(add) > 0 && !dryRun {
+			fmt.Fprintf(&sb, "\nthey are mode %s, so an agent can reach them but run nothing.\n", mode)
+			sb.WriteString("set what each may do with `ssha ui`, or per host in the config.\n")
+		}
+		if all := append(append([]string{}, res.Warnings...), perHost...); len(all) > 0 {
+			sb.WriteString("\nthings to look at:\n")
+			for _, w := range all {
+				fmt.Fprintf(&sb, "  - %s\n", w)
+			}
+		}
+		return sb.String()
+	})
+	return ExitOK
+}
+
+func names(hs []config.Host) []string {
+	out := make([]string, 0, len(hs))
+	for _, h := range hs {
+		out = append(out, h.Name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ---------------------------------------------------------------------------
 // run
 // ---------------------------------------------------------------------------
 
 type runFlags struct {
 	cwd     string
 	cmd     string
+	app     string
 	timeout time.Duration
 	maxOut  int
 	dryRun  bool
@@ -559,6 +712,7 @@ func (a *App) addRunFlags(name string) *runFlags {
 	r.fs.DurationVar(&r.timeout, "timeout", 0, "per-command timeout; can only shorten the policy limit")
 	r.fs.IntVar(&r.maxOut, "max-output", 0, "max captured output bytes; can only lower the policy limit")
 	r.fs.Var(&r.env, "e", "extra environment variable KEY=VALUE (repeatable)")
+	r.fs.StringVar(&r.app, "app", "", "name the application this command is for; it must be one this host runs, and it is recorded in the audit log")
 	return r
 }
 
@@ -594,6 +748,7 @@ func (a *App) cmdRun(args []string) int {
 
 	res, err := b.Exec(ctx, broker.ExecRequest{
 		Host:           host,
+		App:            r.app,
 		Command:        command,
 		Cwd:            r.cwd,
 		Env:            r.env,
@@ -685,8 +840,8 @@ func (a *App) cmdMulti(args []string) int {
 	if command == "" {
 		return a.usageErr("usage: ssha multi [--host H]... [--tag T]... [--] <command>")
 	}
-	if len(hosts) == 0 && len(tags) == 0 && *multiQuery == "" {
-		return a.usageErr("select hosts with --host, --tag or --query")
+	if len(hosts) == 0 && len(tags) == 0 && *multiQuery == "" && r.app == "" {
+		return a.usageErr("select hosts with --host, --tag, --query or --app")
 	}
 
 	b, err := a.open()
@@ -699,6 +854,7 @@ func (a *App) cmdMulti(args []string) int {
 		Hosts:          hosts,
 		Tags:           tags,
 		Query:          *multiQuery,
+		App:            r.app,
 		Command:        command,
 		Cwd:            r.cwd,
 		Timeout:        r.timeout,
@@ -938,10 +1094,11 @@ func (a *App) cmdAudit(args []string) int {
 
 func (a *App) cmdAuditLs(args []string) int {
 	fs := a.newFlagSet("audit ls")
-	var host, typ, decision string
+	var host, app, typ, decision string
 	limit := fs.Int("limit", 50, "maximum records")
 	since := fs.Duration("since", 0, "only records newer than this duration ago")
 	fs.StringVar(&host, "host", "", "filter by host")
+	fs.StringVar(&app, "app", "", "filter by the application the command was for")
 	fs.StringVar(&typ, "type", "", "filter by type: exec, upload, download")
 	fs.StringVar(&decision, "decision", "", "filter by decision: allowed, denied")
 	if code, ok := a.parse(fs, args); !ok {
@@ -953,7 +1110,7 @@ func (a *App) cmdAuditLs(args []string) int {
 	}
 	defer b.Close()
 
-	filter := audit.Filter{Host: host, Type: typ, Decision: decision}
+	filter := audit.Filter{Host: host, App: app, Type: typ, Decision: decision}
 	if *since > 0 {
 		filter.Since = time.Now().Add(-*since)
 	}
@@ -973,7 +1130,7 @@ func renderAuditTable(records []audit.Record) string {
 	}
 	var sb strings.Builder
 	tw := tabwriter.NewWriter(&sb, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "TIME\tID\tHOST\tTYPE\tDECISION\tEXIT\tCOMMAND")
+	fmt.Fprintln(tw, "TIME\tID\tHOST\tAPP\tTYPE\tDECISION\tEXIT\tCOMMAND")
 	for i := range records {
 		r := &records[i]
 		cmd := strings.ReplaceAll(strings.TrimSpace(r.Command), "\n", " ")
@@ -988,8 +1145,8 @@ func renderAuditTable(records []audit.Record) string {
 			agent = r.Agent.Tool
 		}
 		_ = agent
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
-			r.Time.Local().Format("2006-01-02 15:04:05"), r.ID, r.Host, r.Type, r.Decision, r.ExitCode, cmd)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
+			r.Time.Local().Format("2006-01-02 15:04:05"), r.ID, r.Host, r.App, r.Type, r.Decision, r.ExitCode, cmd)
 	}
 	tw.Flush()
 	return sb.String()
@@ -1036,6 +1193,7 @@ func renderAuditDetail(r *audit.Record) string {
 	}
 	row("type", r.Type)
 	row("host", r.Host)
+	row("app", r.App)
 	row("command", r.Command)
 	row("path", r.Path)
 	row("cwd", r.Cwd)

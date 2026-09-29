@@ -46,6 +46,7 @@ codex / pi / claude / cursor ─────┐         │                    �
 | 审计 | 日志文本 | 每条命令结构化记录 + SHA-256 哈希链，`ssha audit verify` 可检测篡改 |
 | 工具数量 | 动辄 30+ | 7 个，面向模型选择准确率设计 |
 | 服务发现 | 只有 IP 列表，模型得猜哪台跑什么 | 每个主机可描述 `apps`（systemd 单元、端口、日志、runbook），`ssh_list_hosts --query payment` 直接定位到机器和单元 |
+| 按服务追溯 | — | 命令可声明 `--app checkout-api`，声明会被校验并写进审计；`ssha audit ls --app checkout-api` 回答「这个服务被做过什么」 |
 | 主机身份 | agent 直连，地址/账号全暴露 | `disclosure` + `redact_output` 可只给别名，输出、错误、审计里的地址/账号全部换成 `<host>`/`<user>` |
 | 超时/输出上限 | agent 说了算 | 策略设上限，agent 只能收紧不能放宽 |
 | 多主机 | 逐个 | `ssh_exec_many` 按 tag 并行下发 |
@@ -157,6 +158,26 @@ ssha multi --query checkout -- systemctl status checkout-api
 对应的 MCP 工具是 `ssh_list_hosts({"query": "payment"})`，描述里明确写了
 「用 query 找服务在哪台机器」。所以 skill 的第一步不再是「列主机」，而是「找服务」。
 
+#### 让每条命令带上应用上下文
+
+agent 可以（也应该）声明这条命令是为哪个应用做的。这个声明会被**校验**并写进审计记录：
+
+```bash
+ssha run prod-web --app checkout-api -- systemctl status checkout-api
+ssha multi --app checkout-api -- systemctl restart checkout-api
+ssha audit ls --app checkout-api          # 这个服务到底被做过什么
+```
+
+声明一个这台机器上并不存在的应用会被**拒绝**，并把该机器实际跑的应用列出来：
+
+```
+$ ssha run prod-web --app payment -- systemctl status nginx
+ssha: host "prod-web" does not run "payment"; it runs: nginx, checkout-api
+```
+
+所以审计里的 `app` 字段是可信的：模型不能为了「看起来在做正事」而随便贴一个标签。
+这是把「哪台机器」和「哪个服务」两个维度都变成可追溯的关键。
+
 ### 4.2 策略 `policy`
 
 三种模式，**deny 永远优先**：
@@ -243,7 +264,43 @@ server:
 
 ---
 
-### 4.5 添加一台机器（含「不允许免密」的情况）
+### 4.5 从 `~/.ssh/config` 批量导入
+
+已有的机器不用手抄。导入会解析 `Host`/`HostName`/`User`/`Port`/`IdentityFile`/`ProxyJump`
+和 `Include`：
+
+```bash
+ssha hosts import --dry-run                    # 先看会导入什么，不写文件
+ssha hosts import --policy-mode readonly       # 顺便给一份保守的只读白名单
+ssha hosts import --only 'web-*' --tag work    # 只挑一部分，并打上 tag
+ssha hosts import --overwrite                  # 也刷新已存在的主机
+```
+
+或者直接在界面里点 **import from ~/.ssh/config**，勾选、选策略、导入。
+
+**它表达不了的东西会明说，不会静默丢掉**：
+
+```
+things to look at:
+  - ~/.ssh/config:21: `Host *.example.com` relies on pattern matching, which ssha does not have; those hosts were not imported
+  - ~/.ssh/config:24: cmd-host uses ProxyCommand, which ssha cannot express; the host was imported without a jump host
+  - ~/.ssh/config:16: db-1 has no IdentityFile; imported as auth.type=agent (needs SSH_AUTH_SOCK)
+  - ~/.ssh/config:11: web-1 uses a % token in HostName (10.0.0.%h); ssha does not expand tokens, so fix addr before using this host
+  - ~/.ssh/config:28: legacy jumps through "10.0.0.9", which is not among the imported aliases; import it too, or set proxy_jump by hand
+```
+
+两个刻意的默认值：
+
+- **导入的主机默认是 `deny`**（或者你指定的模式）。导入只是「让它可见」，不是「放权」。
+  `--policy-mode readonly` 会附带一份只读白名单（`ls`/`cat`/`journalctl`/`systemctl status`…），
+  可以看不能改。
+- **不设 `host_key`**，于是沿用 `~/.ssh/known_hosts`——你现在用 ssh 连过它，那里通常已经有记录了。
+  想钉死在配置里就用 `ssha host-key <alias> --write`，或在界面里点扫描。
+
+`Host *` 块里的 `User`/`IdentityFile` 会作为默认值继承（OpenSSH 是"取第一个值"，具体块优先）；
+`Host *.internal` 这类模式块无法展开，会跳过并告警。
+
+### 4.6 添加一台机器（含「不允许免密」的情况）
 
 #### 第 0 步（必做）：先把主机密钥钉住
 
@@ -362,6 +419,8 @@ ssha ui --addr 127.0.0.1:9000
   「`redact_output` 开了但 `disclosure` 还是 `full`，地址照样会从清单里漏出去」这类问题。
 - **连接自检 + 主机密钥扫描**：点一下就能测连通性并看到协商到的指纹；扫描到的指纹可以一键填进
   `fingerprints` 钉死，比维护 `known_hosts` 更适合 config-as-code。
+- **从 `~/.ssh/config` 导入**：列出候选别名（已存在的会标出来）、每条的注意事项、勾选后按指定策略
+  一次导入（见 §4.5）。
 
 **它是怎么改你的文件的**：编辑器按 YAML 节点树改，只动你改过的字段，**手写注释和没碰过的结构
 原样保留**（有单测断言这件事：72 行注释进、72 行注释出），写完会重新加载校验，不合法就整体回滚，
@@ -580,15 +639,16 @@ cp extensions/pi/ssha-agent.ts ~/.pi/agent/extensions/
 ssha init [--out ssha.yaml] [--force]
 ssha hosts [list] [--tag T] [--name GLOB] [--query TEXT] [--all] [--json]
 ssha hosts find <words...>        # 等同于 list --query
+ssha hosts import [--file PATH] [--policy-mode deny|readonly|allow] [--only GLOB] [--tag T] [--dry-run] [--overwrite]
 ssha hosts show <name>
 ssha hosts test <name>... | --tag T | --all [--probe CMD] [--json]
 ssha host-key <name|addr>[:port] [--port N] [--known-hosts PATH] [--write] [--timeout 10s] [--json]
-ssha run <host> [--cwd DIR] [-e K=V] [--timeout 30s] [--max-output N] [--dry-run] [--json] [--] <cmd>
-ssha multi [--host H]... [--tag T]... [--query TEXT] [--concurrency N] [--] <cmd>
+ssha run <host> [--app NAME] [--cwd DIR] [-e K=V] [--timeout 30s] [--max-output N] [--dry-run] [--json] [--] <cmd>
+ssha multi [--host H]... [--tag T]... [--query TEXT] [--app NAME] [--concurrency N] [--] <cmd>
 ssha upload <host> <local|-> <remote> [--mode 0644]
 ssha download <host> <remote> <local|-> [--max-bytes N]
 ssha policy check <host> [--] <cmd>
-ssha audit ls [--host H] [--type exec|upload|download] [--decision allowed|denied] [--limit N] [--since 1h]
+ssha audit ls [--host H] [--app NAME] [--type exec|upload|download] [--decision allowed|denied] [--limit N] [--since 1h]
 ssha audit show <id>
 ssha audit verify
 ssha mcp [--http ADDR] [--verbose]
@@ -657,7 +717,7 @@ scripts/                  e2e、MCP 冒烟与隐私脚本
 - [ ] `ssha serve` 常驻模式：Windows 命名管道 / Unix socket，agent 走本地 RPC
 - [ ] 凭证加密仓（age/sops）与 OS keyring
 - [ ] 每命令资源配额（CPU/内存 cgroup）、命令去重与限流
-- [ ] UI：审计检索与导出、批量导入主机、从 `~/.ssh/config` 导入
+- [ ] UI：审计检索与导出、按 tag 批量改策略
 
 ## 12. License
 

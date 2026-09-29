@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -262,5 +263,77 @@ func TestGet(t *testing.T) {
 	}
 	if _, err := Get(path, "does-not-exist"); err == nil {
 		t.Fatal("expected an error for an unknown id")
+	}
+}
+
+// TestRecordWithoutAnAppHashesLikeItAlwaysDid guards the compatibility promise
+// of the hash chain: an audit file written before Record gained the App field
+// must still verify, because verification re-marshals each record and compares
+// hashes. A record with no app has to serialise to exactly the bytes it was
+// hashed from, which means the new field must stay omitempty and must not
+// shuffle the fields around it.
+func TestRecordWithoutAnAppHashesLikeItAlwaysDid(t *testing.T) {
+	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+
+	// The shape of Record before the App field existed.
+	type recordV1 struct {
+		ID         string    `json:"id"`
+		Time       time.Time `json:"time"`
+		PrevHash   string    `json:"prev_hash"`
+		Hash       string    `json:"hash,omitempty"`
+		SessionID  string    `json:"session_id"`
+		Seq        int       `json:"seq"`
+		Actor      string    `json:"actor,omitempty"`
+		Machine    string    `json:"machine,omitempty"`
+		Agent      *Agent    `json:"agent,omitempty"`
+		Type       string    `json:"type"`
+		Host       string    `json:"host"`
+		Command    string    `json:"command,omitempty"`
+		Path       string    `json:"path,omitempty"`
+		Cwd        string    `json:"cwd,omitempty"`
+		Decision   string    `json:"decision"`
+		Reason     string    `json:"reason,omitempty"`
+		ExitCode   int       `json:"exit_code,omitempty"`
+		DurationMS int64     `json:"duration_ms,omitempty"`
+		Bytes      int64     `json:"bytes,omitempty"`
+		Truncated  bool      `json:"truncated,omitempty"`
+		Stdout     string    `json:"stdout,omitempty"`
+		Stderr     string    `json:"stderr,omitempty"`
+	}
+
+	old := recordV1{
+		ID: "20260304T050607.000000000Z-abcdef", Time: now, PrevHash: "sha256:prev",
+		SessionID: "ssha-1", Seq: 7, Actor: "ch", Machine: "box",
+		Agent: &Agent{Tool: "pi", Model: "m"}, Type: TypeExec, Host: "web-1",
+		Command: "systemctl status nginx", Cwd: "/srv", Decision: DecisionAllowed,
+		ExitCode: 0, DurationMS: 12, Bytes: 10, Stdout: "active\n",
+	}
+	// The same record as the current code would write it: no app.
+	current := Record{
+		ID: old.ID, Time: old.Time, PrevHash: old.PrevHash, Hash: old.Hash,
+		SessionID: old.SessionID, Seq: old.Seq, Actor: old.Actor, Machine: old.Machine,
+		Agent: old.Agent, Type: old.Type, Host: old.Host, Command: old.Command,
+		Path: old.Path, Cwd: old.Cwd, Decision: old.Decision, Reason: old.Reason,
+		ExitCode: old.ExitCode, DurationMS: old.DurationMS, Bytes: old.Bytes,
+		Truncated: old.Truncated, Stdout: old.Stdout, Stderr: old.Stderr,
+	}
+
+	oldJSON, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newJSON, err := json.Marshal(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(oldJSON) != string(newJSON) {
+		t.Fatalf("a record without an app no longer serialises the same, so old audit logs would stop verifying.\nold: %s\nnew: %s", oldJSON, newJSON)
+	}
+	// The chain is built over the JSON, so identical bytes mean an identical
+	// hash; compare that directly rather than through the Record type.
+	sumOld := sha256.Sum256(append([]byte("sha256:prev\n"), oldJSON...))
+	sumNew := sha256.Sum256(append([]byte("sha256:prev\n"), newJSON...))
+	if sumOld != sumNew {
+		t.Error("the hash of an app-less record changed")
 	}
 }

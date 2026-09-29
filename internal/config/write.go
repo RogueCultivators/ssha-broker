@@ -18,30 +18,41 @@ import (
 // result is validated by a full reload before it is kept: on any error the
 // previous file is restored byte for byte.
 func UpsertHost(path string, h Host) error {
+	return UpsertHosts(path, []Host{h})
+}
+
+// UpsertHosts adds or replaces several hosts in a single write, so an import of
+// fifty machines is one backup and one atomic edit.
+func UpsertHosts(path string, hosts []Host) error {
+	if len(hosts) == 0 {
+		return nil
+	}
 	doc, err := readDocument(path)
 	if err != nil {
 		return err
 	}
-	hosts, err := hostsSequence(doc)
+	seq, err := hostsSequence(doc)
 	if err != nil {
 		return err
 	}
-	node, err := encodeNode(h)
-	if err != nil {
-		return err
-	}
-	if existing := findHostNode(hosts, h.Name); existing != nil {
-		mergeNode(existing, node)
-	} else {
+	for _, h := range hosts {
+		node, err := encodeNode(h)
+		if err != nil {
+			return err
+		}
+		if existing := findHostNode(seq, h.Name); existing != nil {
+			mergeNode(existing, node)
+			continue
+		}
 		// Merging into an empty mapping is how the encoded host gets pruned of
 		// empty blocks (`host_key: {}`) before it is appended.
 		pruned := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 		mergeNode(pruned, node)
-		if len(hosts.Content) > 0 {
+		if len(seq.Content) > 0 {
 			// Separate appended entries the way a human would.
 			pruned.HeadComment = "\n"
 		}
-		hosts.Content = append(hosts.Content, pruned)
+		seq.Content = append(seq.Content, pruned)
 	}
 	return writeDocument(path, doc)
 }

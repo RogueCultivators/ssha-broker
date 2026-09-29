@@ -12,9 +12,11 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"ssha/internal/config"
 	"ssha/internal/policy"
+	"ssha/internal/sshx"
 )
 
 // writeTestKey creates a throwaway private key so the auth layer gets past key
@@ -147,7 +149,9 @@ func loadBroker(t *testing.T, body string, reveal bool) *Broker {
 	if err != nil {
 		t.Fatalf("NewSet: %v", err)
 	}
-	b := &Broker{cfg: cfg, policies: policies, reveal: reveal}
+	// A pool is included so this helper cannot surprise a future test that
+	// reaches the execution path with a nil dereference.
+	b := &Broker{cfg: cfg, policies: policies, pool: sshx.NewPool(time.Minute), reveal: reveal}
 	b.buildRedactors()
 	return b
 }

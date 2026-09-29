@@ -32,6 +32,7 @@ import (
 	"ssha/internal/audit"
 	"ssha/internal/broker"
 	"ssha/internal/config"
+	"ssha/internal/sshconfig"
 	"ssha/internal/sshx"
 
 	"golang.org/x/crypto/ssh"
@@ -90,6 +91,8 @@ func Run(ctx context.Context, opts Options) error {
 	mux.Handle("/api/test", s.auth(http.HandlerFunc(s.handleTest)))
 	mux.Handle("/api/hostkey", s.auth(http.HandlerFunc(s.handleHostKey)))
 	mux.Handle("/api/audit", s.auth(http.HandlerFunc(s.handleAudit)))
+	mux.Handle("/api/sshconfig", s.auth(http.HandlerFunc(s.handleSSHConfig)))
+	mux.Handle("/api/sshconfig/import", s.auth(http.HandlerFunc(s.handleSSHConfigImport)))
 
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	errCh := make(chan error, 1)
@@ -422,6 +425,155 @@ func (s *server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		"audit_log": s.broker().AuditPath(),
 		"records":   records,
 		"count":     len(records),
+	})
+}
+
+// ---------------------------------------------------------------------------
+// importing ~/.ssh/config
+// ---------------------------------------------------------------------------
+
+// importCandidate is one Host block from the ssh config, ready to be checked.
+type importCandidate struct {
+	Alias     string   `json:"alias"`
+	Addr      string   `json:"addr"`
+	User      string   `json:"user,omitempty"`
+	Port      int      `json:"port,omitempty"`
+	Auth      string   `json:"auth"`
+	ProxyJump string   `json:"proxy_jump,omitempty"`
+	Source    string   `json:"source"`
+	Exists    bool     `json:"exists"`
+	Warnings  []string `json:"warnings,omitempty"`
+}
+
+func (s *server) importCandidates(file string) ([]importCandidate, []string, error) {
+	if file == "" {
+		file = sshconfig.DefaultPath()
+	}
+	file = config.ExpandHome(file)
+	if file == "" {
+		return nil, nil, errors.New("cannot locate ~/.ssh/config")
+	}
+	res, err := sshconfig.Parse(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	converted := sshconfig.Convert(res.Hosts, sshconfig.ConvertOptions{PolicyMode: config.ModeDeny})
+	cfg := s.broker().Config()
+
+	out := make([]importCandidate, 0, len(converted))
+	for _, c := range converted {
+		h := c.Host
+		_, existsErr := cfg.Host(h.Name)
+		out = append(out, importCandidate{
+			Alias:     h.Name,
+			Addr:      h.Addr,
+			User:      h.User,
+			Port:      h.Port,
+			Auth:      h.Auth.Type,
+			ProxyJump: h.ProxyJump,
+			Source:    c.Source,
+			Exists:    existsErr == nil,
+			Warnings:  c.Warnings,
+		})
+	}
+	return out, res.Warnings, nil
+}
+
+func (s *server) handleSSHConfig(w http.ResponseWriter, r *http.Request) {
+	candidates, warnings, err := s.importCandidates(r.URL.Query().Get("file"))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	file := r.URL.Query().Get("file")
+	if file == "" {
+		file = sshconfig.DefaultPath()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"file":     config.ExpandHome(file),
+		"hosts":    candidates,
+		"warnings": warnings,
+	})
+}
+
+func (s *server) handleSSHConfigImport(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		File       string   `json:"file"`
+		Aliases    []string `json:"aliases"`
+		PolicyMode string   `json:"policy_mode"`
+		Overwrite  bool     `json:"overwrite"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if in.PolicyMode == "" {
+		in.PolicyMode = config.ModeDeny
+	}
+	switch in.PolicyMode {
+	case config.ModeDeny, config.ModeReadonly, config.ModeAllow:
+	default:
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("policy_mode must be deny, readonly or allow, got %q", in.PolicyMode))
+		return
+	}
+
+	if in.File == "" {
+		in.File = sshconfig.DefaultPath()
+	}
+	in.File = config.ExpandHome(in.File)
+	res, err := sshconfig.Parse(in.File)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+
+	wanted := make(map[string]bool, len(in.Aliases))
+	for _, a := range in.Aliases {
+		wanted[a] = true
+	}
+	entries := res.Hosts[:0]
+	for _, e := range res.Hosts {
+		if wanted[e.Alias] {
+			entries = append(entries, e)
+		}
+	}
+	if len(entries) == 0 {
+		writeErr(w, http.StatusBadRequest, errors.New("no hosts were selected"))
+		return
+	}
+
+	converted := sshconfig.Convert(entries, sshconfig.ConvertOptions{PolicyMode: in.PolicyMode})
+	cfg := s.broker().Config()
+	var toWrite []config.Host
+	skipped := []string{}
+	warnings := []string{}
+	for _, c := range converted {
+		warnings = append(warnings, c.Warnings...)
+		if _, err := cfg.Host(c.Host.Name); err == nil && !in.Overwrite {
+			skipped = append(skipped, c.Host.Name)
+			continue
+		}
+		toWrite = append(toWrite, c.Host)
+	}
+	if err := config.UpsertHosts(s.cfgPath, toWrite); err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	if err := s.reload(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	written := make([]string, 0, len(toWrite))
+	for _, h := range toWrite {
+		written = append(written, h.Name)
+	}
+	slog.Info("imported from ssh config", "file", in.File, "hosts", len(written), "mode", in.PolicyMode)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":       true,
+		"imported": written,
+		"skipped":  skipped,
+		"warnings": warnings,
 	})
 }
 

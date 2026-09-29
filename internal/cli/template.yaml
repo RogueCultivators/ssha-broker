@@ -5,6 +5,7 @@
 # from environment variables), but keep it readable only by the user who runs
 # `ssha`. It is gitignored by default; commit it only if your team agrees.
 #
+#  Import your existing hosts:       ssha hosts import --dry-run
 #  Inspect what a host allows with:  ssha hosts show <name>
 #  Test a host end to end with:      ssha hosts test <name>
 #  Pin a host key you do not have:   ssha host-key <addr> --write

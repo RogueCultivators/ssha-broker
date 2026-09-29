@@ -128,6 +128,9 @@
       <input id="search" placeholder="search hosts, apps, tags…" autocomplete="off">
       <button id="new" title="New host">+</button>
     </div>
+    <div class="row" style="margin-bottom:10px">
+      <button id="import-open" style="flex:1">import from ~/.ssh/config</button>
+    </div>
     <ul class="hostlist" id="list"></ul>
     <details id="auditbox">
       <summary>audit log</summary>
@@ -142,6 +145,48 @@
   <main>
     <div id="warnings"></div>
     <p class="empty" id="nothing">Select a host on the left, or create one.</p>
+
+    <div id="import" hidden>
+      <fieldset>
+        <legend>Import from an ssh config</legend>
+        <p class="hint" style="margin-top:0">
+          Aliases, addresses, users, ports, keys and jump hosts come across. Anything ssha cannot
+          express (Match blocks, ProxyCommand, <code>Host</code> patterns) is reported below instead of
+          being dropped quietly, and nothing is granted: imported hosts start with the policy you pick.
+        </p>
+        <div class="grid">
+          <div>
+            <label for="i-file">ssh config file</label>
+            <input id="i-file" placeholder="~/.ssh/config">
+          </div>
+          <div>
+            <label for="i-mode">policy for the imported hosts</label>
+            <select id="i-mode">
+              <option value="deny">deny — visible to the agent, runs nothing (safest)</option>
+              <option value="readonly">readonly — a conservative read-only allow list</option>
+              <option value="allow">allow — only the deny list protects it</option>
+            </select>
+          </div>
+        </div>
+        <div class="check" style="margin-top:10px">
+          <input type="checkbox" id="i-overwrite"><label for="i-overwrite" style="margin:0">also refresh hosts that already exist here</label>
+        </div>
+      </fieldset>
+
+      <div class="row" style="margin-bottom:8px">
+        <button type="button" id="i-rescan">rescan</button>
+        <button type="button" id="i-all">select all</button>
+        <button type="button" id="i-none">select none</button>
+        <span class="hint" id="i-count"></span>
+      </div>
+      <div id="i-list"></div>
+
+      <div class="actions">
+        <button type="button" class="primary" id="i-do">Import selected</button>
+        <button type="button" id="i-cancel">Cancel</button>
+      </div>
+      <div class="result" id="i-result"></div>
+    </div>
 
     <form id="form" hidden autocomplete="off">
       <fieldset>
@@ -639,6 +684,92 @@ $("scan").addEventListener("click", async () => {
   } catch (err) {
     $("scan-out").textContent = "";
     showResult("scan failed: " + String(err.message || err), true);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// import from an ssh config
+// ---------------------------------------------------------------------------
+
+async function loadCandidates() {
+  $("i-result").textContent = "scanning…";
+  try {
+    const q = $("i-file").value.trim();
+    const r = await api("/api/sshconfig" + (q ? "?file=" + encodeURIComponent(q) : ""));
+    $("i-file").value = r.file;
+    const rows = r.hosts || [];
+    const known = rows.filter((c) => c.exists).length;
+    $("i-count").textContent = rows.length
+      ? `${rows.length} alias(es), ${known} already in the config`
+      : "";
+    $("i-list").innerHTML = rows.length
+      ? rows.map((c) => `
+        <label class="check" style="align-items:flex-start; padding:7px 9px; border:1px solid var(--line); border-radius:7px; margin-bottom:4px">
+          <input type="checkbox" class="i-pick" value="${esc(c.alias)}" checked>
+          <span>
+            <span class="name" style="font-family:var(--mono)">${esc(c.alias)}</span>
+            <span class="sub"> → ${esc(c.addr)}${c.user ? " as " + esc(c.user) : ""}${c.port && c.port !== 22 ? ":" + c.port : ""} · auth ${esc(c.auth)}${c.proxy_jump ? " · via " + esc(c.proxy_jump) : ""}</span>
+            ${c.exists ? ' <span class="badge">already configured</span>' : ""}
+            ${(c.warnings || []).map((w) => `<div class="sub" style="color:var(--warn)">${esc(w)}</div>`).join("")}
+          </span>
+        </label>`).join("")
+      : `<p class="empty">no Host blocks found in ${esc(r.file)}</p>`;
+    const warnings = r.warnings || [];
+    $("i-result").textContent = warnings.length ? warnings.map((w) => "· " + w).join("\n") : "";
+    $("i-result").className = warnings.length ? "result" : "result ok";
+  } catch (err) {
+    $("i-list").innerHTML = "";
+    $("i-result").textContent = String(err.message || err);
+    $("i-result").className = "result bad";
+  }
+}
+
+function openImport() {
+  selected = null;
+  renderList();
+  $("nothing").hidden = true;
+  $("form").hidden = true;
+  $("import").hidden = false;
+  loadCandidates();
+}
+
+$("import-open").addEventListener("click", openImport);
+$("i-rescan").addEventListener("click", loadCandidates);
+$("i-cancel").addEventListener("click", () => {
+  $("import").hidden = true;
+  $("nothing").hidden = false;
+});
+$("i-all").addEventListener("click", () => document.querySelectorAll(".i-pick").forEach((c) => { c.checked = true; }));
+$("i-none").addEventListener("click", () => document.querySelectorAll(".i-pick").forEach((c) => { c.checked = false; }));
+
+$("i-do").addEventListener("click", async () => {
+  const aliases = [...document.querySelectorAll(".i-pick:checked")].map((c) => c.value);
+  if (!aliases.length) { $("i-result").textContent = "nothing selected"; return; }
+  $("i-do").disabled = true;
+  try {
+    const r = await api("/api/sshconfig/import", {
+      method: "POST",
+      body: JSON.stringify({
+        file: $("i-file").value.trim(),
+        aliases,
+        policy_mode: $("i-mode").value,
+        overwrite: $("i-overwrite").checked,
+      }),
+    });
+    await refresh();
+    const imported = r.imported || [], skipped = r.skipped || [], warnings = r.warnings || [];
+    const bits = [`imported ${imported.length}: ${imported.join(", ")}`];
+    if (skipped.length) bits.push(`skipped ${skipped.length} already present: ${skipped.join(", ")}`);
+    if (warnings.length) bits.push(warnings.map((w) => "· " + w).join("\n"));
+    await loadCandidates();
+    $("i-result").textContent = bits.join("\n");
+    $("i-result").className = "result ok";
+    setStatus(`${hosts.length} host(s)`);
+  } catch (err) {
+    $("i-result").textContent = String(err.message || err);
+    $("i-result").className = "result bad";
+  } finally {
+    $("i-do").disabled = false;
   }
 });
 

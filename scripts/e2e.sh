@@ -211,6 +211,33 @@ contains "only the matching host ran" "testbox" "$out"
 if printf '%s' "$out" | grep -q "testbox-rw"; then fail "multi --query was too broad"; else pass "multi --query did not include other hosts"; fi
 
 # ---------------------------------------------------------------------------
+log "cli: app-scoped commands and audit"
+
+out=$("$BIN" run testbox --app payment-api -- whoami); check "run --app on a host that runs it" 0 $?
+contains "the command still ran" "root" "$out"
+
+out=$("$BIN" run testbox --app nosuchapp -- whoami 2>&1); code=$?
+check "run --app with an unknown app is refused" 1 "$code"
+contains "the refusal lists what the host actually runs" "payment-api" "$out"
+if printf '%s' "$out" | grep -q "root$"; then fail "the refused command ran anyway"; else pass "the refused command did not run"; fi
+
+out=$("$BIN" run testbox --app payment-api --json -- whoami)
+contains "the app is echoed on the result" '"app": "payment-api"' "$out"
+
+out=$("$BIN" audit ls --app payment-api --json)
+contains "audit filters by app" '"app": "payment-api"' "$out"
+out=$("$BIN" audit ls --app nosuchapp --json)
+count=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])' <<<"$out")
+[ "$count" = "0" ] && pass "an unused app has no records" || fail "expected no records, got $count"
+
+out=$("$BIN" multi --app nginx -- whoami); check "multi --app selects the hosts running it" 0 $?
+contains "multi --app reached testbox" "testbox" "$out"
+if printf '%s' "$out" | grep -q "testbox-rw"; then fail "multi --app was too broad"; else pass "multi --app excluded hosts without the app"; fi
+
+out=$("$BIN" multi --app nginx --json -- whoami)
+contains "multi records the app against each command" '"app": "nginx"' "$out"
+
+# ---------------------------------------------------------------------------
 log "cli: auth methods"
 export SSHA_E2E_PASSWORD="e2e-secret"
 
@@ -495,6 +522,52 @@ log "mcp over stdio"
 out=$(python3 "$REPO/scripts/mcp_smoke.py" "$WORK/ssha.yaml" "$BIN" 2>&1); code=$?
 check "mcp smoke test" 0 "$code"
 printf '%s\n' "$out" | grep -E '^(MCP SMOKE TEST PASSED|=== tools/call)' | sed 's/^/  /'
+
+# ---------------------------------------------------------------------------
+log "cli: import from an ssh config"
+
+# Mirror the test container the way a user's ssh config would, and give HOME a
+# known_hosts so the imported host can verify the server with no extra setup.
+mkdir -p "$WORK/home/.ssh"
+cp "$WORK/known_hosts" "$WORK/home/.ssh/known_hosts"
+cat > "$WORK/ssh_config" <<EOF
+# imported by the e2e run
+Host *
+    User root
+
+Host testbox-imported
+    HostName 127.0.0.1
+    Port $PORT
+    IdentityFile $WORK/id_ed25519
+
+Host *.example.com
+    User someone
+EOF
+as_home() { env HOME="$WORK/home" SSHA_CONFIG="$WORK/ssha.yaml" "$BIN" "$@"; }
+
+out=$(as_home hosts import --file "$WORK/ssh_config" --policy-mode readonly --dry-run)
+check "a dry run reports what it would do" 0 $?
+contains "the dry run lists the alias" "testbox-imported" "$out"
+contains "the dry run warns about the pattern block" "*.example.com" "$out"
+if grep -q "testbox-imported" "$WORK/ssha.yaml"; then fail "a dry run wrote to the config"; else pass "a dry run writes nothing"; fi
+
+out=$(as_home hosts import --file "$WORK/ssh_config" --policy-mode readonly --tag imported-test)
+check "the import runs" 0 $?
+contains "the import reports the alias" "testbox-imported" "$out"
+contains "the extra tag was applied" "imported-test" "$(cat "$WORK/ssha.yaml")"
+contains "the readonly mode seeded an allow list" "allow_commands" "$(cat "$WORK/ssha.yaml")"
+
+# The whole point: an imported host is immediately usable.
+out=$(as_home hosts test testbox-imported); check "the imported host connects" 0 $?
+contains "it verified the server against the default known_hosts" "SHA256:" "$out"
+out=$(as_home run testbox-imported -- uname -s); check "the imported host runs a command" 0 $?
+contains "and returns output" "Linux" "$out"
+out=$(as_home run testbox-imported -- mkfs.ext4 /dev/sda 2>&1); code=$?
+check "the seeded readonly allow list still blocks a destructive command" 77 "$code"
+
+out=$(as_home hosts import --file "$WORK/ssh_config" --policy-mode readonly)
+check "a second import is not an error" 0 $?
+contains "a second import skips what is already there" "skipped" "$out"
 
 # ---------------------------------------------------------------------------
 log "ui (config editor)"
