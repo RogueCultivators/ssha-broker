@@ -109,6 +109,12 @@
   details.adv[open] > summary::before { content: "▾ "; }
   details.adv[open] > summary { margin-bottom: 8px; }
 
+  pre.snippet {
+    margin: 4px 0 0; padding: 8px 10px; background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 6px; overflow-x: auto;
+    font-family: var(--mono); font-size: 12px; white-space: pre;
+  }
+
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
   th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--muted); font-weight: 500; }
@@ -139,8 +145,11 @@
       <input id="search" placeholder="搜名称或备注…" autocomplete="off">
       <button id="new" title="新建主机">＋</button>
     </div>
-    <div class="row" style="margin-bottom:10px">
+    <div class="row" style="margin-bottom:6px">
       <button id="import-open" style="flex:1">导入 ~/.ssh/config</button>
+    </div>
+    <div class="row" style="margin-bottom:10px">
+      <button id="agent-open" style="flex:1">接入 agent</button>
     </div>
     <ul class="hostlist" id="list"></ul>
     <details id="auditbox">
@@ -203,6 +212,29 @@
         <button type="button" id="i-cancel">取消</button>
       </div>
       <div class="result" id="i-result"></div>
+    </div>
+
+    <div id="agent" hidden>
+      <fieldset>
+        <legend>接入 agent</legend>
+        <p class="hint" style="margin-top:0">skill 告诉 agent 怎么用 ssha，装到下面任一位置即可。</p>
+        <div id="agent-targets"></div>
+        <div class="row" style="margin-top:12px">
+          <button type="button" id="agent-download">下载 SKILL.md</button>
+          <span class="hint" id="agent-cli"></span>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>MCP 配置</legend>
+        <p class="hint" style="margin-top:0">放进对应客户端的配置里再重启它。skill 和 MCP 二选一就行，也可以都用。</p>
+        <div id="agent-mcp"></div>
+      </fieldset>
+
+      <div class="actions">
+        <button type="button" id="agent-close">关闭</button>
+      </div>
+      <div class="result" id="agent-result"></div>
     </div>
 
     <form id="form" hidden autocomplete="off">
@@ -450,11 +482,14 @@ const authLabel = (a) => AUTHS[a] || a;
 
 const setStatus = (msg, bad) => { const el = $("status"); el.textContent = msg; el.style.color = bad ? "var(--bad)" : ""; };
 
+// Exactly one panel is visible at a time.
+const PANELS = ["nothing", "gate", "form", "import", "agent"];
+function showPanel(which) {
+  PANELS.forEach((p) => { $(p).hidden = p !== which; });
+}
+
 function gate(title) {
-  $("gate").hidden = false;
-  $("nothing").hidden = true;
-  $("form").hidden = true;
-  $("import").hidden = true;
+  showPanel("gate");
   $("list").innerHTML = "";
   $("status").textContent = "";
   $("warnings").innerHTML = "";
@@ -500,9 +535,7 @@ $("search").addEventListener("input", (e) => { filter = e.target.value; renderLi
 function loadHost() {
   const h = hosts.find((x) => x.name === selected);
   if (!h) return;
-  $("nothing").hidden = true;
-  $("gate").hidden = true;
-  $("form").hidden = false;
+  showPanel("form");
   const v = (id, val) => { $(id).value = val ?? ""; };
   v("f-name", h.name);
   v("f-addr", h.addr); v("f-port", h.port || ""); v("f-user", h.user);
@@ -705,8 +738,7 @@ $("del").addEventListener("click", async () => {
   try {
     await api("/api/hosts/" + encodeURIComponent(selected), { method: "DELETE" });
     selected = null;
-    $("form").hidden = true;
-    $("nothing").hidden = false;
+    showPanel("nothing");
     await refresh();
   } catch (err) { showResult("删除失败：" + String(err.message || err), true); }
 });
@@ -778,20 +810,14 @@ async function loadCandidates() {
 function openImport() {
   selected = null;
   renderList();
-  $("nothing").hidden = true;
-  $("form").hidden = true;
-  $("gate").hidden = true;
-  $("import").hidden = false;
+  showPanel("import");
   $("warnings").innerHTML = "";
   loadCandidates();
 }
 
 $("import-open").addEventListener("click", openImport);
 $("i-rescan").addEventListener("click", loadCandidates);
-$("i-cancel").addEventListener("click", () => {
-  $("import").hidden = true;
-  $("nothing").hidden = false;
-});
+$("i-cancel").addEventListener("click", () => showPanel("nothing"));
 $("i-all").addEventListener("click", () => document.querySelectorAll(".i-pick").forEach((c) => { c.checked = true; }));
 $("i-none").addEventListener("click", () => document.querySelectorAll(".i-pick").forEach((c) => { c.checked = false; }));
 
@@ -823,6 +849,113 @@ $("i-do").addEventListener("click", async () => {
     $("i-result").className = "result bad";
   } finally {
     $("i-do").disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 接入 agent：装 skill、看 MCP 配置
+// ---------------------------------------------------------------------------
+
+const agentResult = (msg, bad) => {
+  const el = $("agent-result");
+  el.textContent = msg;
+  el.className = "result " + (bad ? "bad" : "ok");
+};
+
+async function loadSkill() {
+  agentResult("读取中…", false);
+  try {
+    const r = await api("/api/skill");
+    $("agent-cli").innerHTML = `等价命令：<code>${esc(r.cli)}</code>`;
+    $("agent-targets").innerHTML = r.targets.map((t) => `
+      <div class="row" style="justify-content:space-between; align-items:flex-start; gap:10px; padding:7px 0; border-bottom:1px solid var(--line)">
+        <span>
+          <span>${esc(t.label)}</span>
+          <div class="hint" style="font-family:var(--mono)">${esc(t.dir)}</div>
+        </span>
+        <span class="row" style="flex:none">
+          <span class="badge ${t.up_to_date ? "allow" : t.exists ? "readonly" : ""}">${t.up_to_date ? "已安装" : t.exists ? "需要更新" : "未安装"}</span>
+          <button type="button" class="t-install" data-dir="${esc(t.dir)}">${t.exists ? "重新安装" : "安装"}</button>
+        </span>
+      </div>`).join("");
+    $("agent-mcp").innerHTML = r.mcp.map((m) => `
+      <div style="margin-bottom:12px">
+        <div class="row" style="justify-content:space-between">
+          <span class="hint">${esc(m.label)}</span>
+          <button type="button" class="copy" data-copy="${esc(m.text)}">复制</button>
+        </div>
+        <pre class="snippet">${esc(m.text)}</pre>
+      </div>`).join("");
+    agentResult("", false);
+  } catch (err) {
+    agentResult("读取失败：" + String(err.message || err), true);
+  }
+}
+
+function openAgent() {
+  selected = null;
+  renderList();
+  showPanel("agent");
+  $("warnings").innerHTML = "";
+  loadSkill();
+}
+
+async function copyToClipboard(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+  const was = btn.textContent;
+  btn.textContent = "已复制";
+  setTimeout(() => { btn.textContent = was; }, 1200);
+}
+
+$("agent-open").addEventListener("click", openAgent);
+$("agent-close").addEventListener("click", () => showPanel("nothing"));
+
+$("agent-targets").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".t-install");
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    const r = await api("/api/skill/install", { method: "POST", body: JSON.stringify({ dir: btn.dataset.dir }) });
+    await loadSkill();
+    agentResult(r.existed ? `已更新：${r.path}` : `已安装：${r.path}`, false);
+  } catch (err) {
+    agentResult("安装失败：" + String(err.message || err), true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("agent-mcp").addEventListener("click", (e) => {
+  const btn = e.target.closest(".copy");
+  if (btn) copyToClipboard(btn.dataset.copy, btn);
+});
+
+$("agent-download").addEventListener("click", async () => {
+  try {
+    const res = await fetch("/api/skill/download", { headers: { "X-SSHA-Token": TOKEN } });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "SKILL.md";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+    agentResult("已下载 SKILL.md", false);
+  } catch (err) {
+    agentResult("下载失败：" + String(err.message || err), true);
   }
 });
 
@@ -871,9 +1004,7 @@ async function refresh() {
 $("new").addEventListener("click", () => {
   selected = null;
   renderList();
-  $("nothing").hidden = true;
-  $("gate").hidden = true;
-  $("form").hidden = false;
+  showPanel("form");
   const v = (id, val) => { $(id).value = val ?? ""; };
   ["f-name", "f-addr", "f-port", "f-user", "f-description", "f-tags",
    "f-key_path", "f-key_env", "f-passphrase_env", "f-passphrase_file", "f-password", "f-passphrase",

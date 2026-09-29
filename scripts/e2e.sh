@@ -543,7 +543,10 @@ log "ui (config editor)"
 UI_PORT=$(( BASE_PORT + 0 ))
 # Start from the commented template so the edit has real comments to preserve.
 "$BIN" init --out "$WORK/ui.yaml" --force >/dev/null
-"$BIN" -c "$WORK/ui.yaml" ui --addr 127.0.0.1:$UI_PORT >"$WORK/ui.log" 2>&1 &
+# Its own HOME, so the skill locations the editor offers land in the work dir
+# instead of the machine's real ~/.agents/skills.
+mkdir -p "$WORK/home"
+env HOME="$WORK/home" "$BIN" -c "$WORK/ui.yaml" ui --addr 127.0.0.1:$UI_PORT >"$WORK/ui.log" 2>&1 &
 UI_PID=$!
 for _ in $(seq 1 40); do grep -q 'token=' "$WORK/ui.log" && break; sleep 0.25; done
 TOKEN=$(grep -o 'token=[a-f0-9]*' "$WORK/ui.log" | head -1 | cut -d= -f2)
@@ -599,6 +602,39 @@ contains "the edit took effect" "edited" "$out"
 contains "the policy override took effect" '"policy_mode": "allow"' "$out"
 out=$("$BIN" -c "$WORK/ui.yaml" hosts find ui-made)
 contains "a host created by the editor is searchable by its note" "ui-made" "$out"
+
+# 接入 agent：装 skill、拿 MCP 配置
+out=$(curl -s -H "X-SSHA-Token: $TOKEN" "http://127.0.0.1:$UI_PORT/api/skill")
+contains "the skill api names the skill" '"ssha-agent"' "$out"
+contains "it offers install locations" '"targets"' "$out"
+contains "it offers an mcp snippet" 'mcpServers' "$out"
+contains "the snippet uses an absolute binary path" "$BIN" "$out"
+
+SKILLDIR="$WORK/home/.agents/skills"
+out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -X POST "http://127.0.0.1:$UI_PORT/api/skill/install" -d "{\"dir\":\"$SKILLDIR\"}")
+check "installing the skill" 0 $?
+contains "installation reports the path" "$SKILLDIR/ssha-agent/SKILL.md" "$out"
+[ -f "$SKILLDIR/ssha-agent/SKILL.md" ] && pass "SKILL.md was written" || fail "SKILL.md missing"
+contains "the installed skill has frontmatter" "name: ssh-agent" "$(cat "$SKILLDIR/ssha-agent/SKILL.md")"
+out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -X POST "http://127.0.0.1:$UI_PORT/api/skill/install" -d "{\"dir\":\"$SKILLDIR\"}")
+contains "installing again is an update, not an error" '"existed":true' "$out"
+out=$(curl -s -H "X-SSHA-Token: $TOKEN" "http://127.0.0.1:$UI_PORT/api/skill" \
+  | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["targets"][0]))')
+contains "the target now reports as installed" '"exists": true' "$out"
+contains "and as up to date" '"up_to_date": true' "$out"
+
+out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -X POST "http://127.0.0.1:$UI_PORT/api/skill/install" -d '{"dir":"/tmp/../etc"}')
+contains "a .. path component is refused" ".." "$out"
+if [ -f /etc/ssha-agent/SKILL.md ]; then fail "the editor wrote outside its directory"; else pass "nothing was written outside the directory"; fi
+
+curl -s -D "$WORK/skill-headers" -o "$WORK/SKILL.md" -H "X-SSHA-Token: $TOKEN" \
+  "http://127.0.0.1:$UI_PORT/api/skill/download"
+contains "the download is served as markdown" "text/markdown" "$(cat "$WORK/skill-headers")"
+contains "the download is an attachment" "attachment" "$(cat "$WORK/skill-headers")"
+contains "the download is the real skill" "name: ssh-agent" "$(cat "$WORK/SKILL.md")"
 
 # The rejected edit must not corrupt the file.
 out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' -X POST "http://127.0.0.1:$UI_PORT/api/hosts" -d '{"name":"broken","auth":{"type":"key"}}')

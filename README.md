@@ -420,6 +420,9 @@ ssha ui --token-file ~/.local/state/ssha/ui.token   # token 跨重启不变，UR
   `fingerprints` 钉死，比维护 `known_hosts` 更适合 config-as-code。
 - **从 `~/.ssh/config` 导入**：列出候选别名（已存在的会标出来）、每条的注意事项、勾选后按指定策略
   一次导入（见 §4.5）。
+- **接入 agent 面板**：一键把 skill 装到 `~/.agents/skills`（或 pi / Claude Code 各自的位置、当前项目），
+  显示每个位置「未安装 / 需要更新 / 已安装」；可以下载 `SKILL.md`；还会生成可直接复制的 MCP 配置
+  （stdio 用二进制绝对路径，配了 `server.tokens` 就再给一份 HTTP 版）。等价命令是 `ssha skill install`。
 
 **它是怎么改你的文件的**：编辑器按 YAML 节点树改，只动你改过的字段，**手写注释和没碰过的结构
 原样保留**（有单测断言这件事：72 行注释进、72 行注释出），写完会重新加载校验，不合法就整体回滚，

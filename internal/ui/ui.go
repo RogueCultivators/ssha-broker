@@ -97,6 +97,9 @@ func Run(ctx context.Context, opts Options) error {
 	mux.Handle("/api/test", s.auth(http.HandlerFunc(s.handleTest)))
 	mux.Handle("/api/hostkey", s.auth(http.HandlerFunc(s.handleHostKey)))
 	mux.Handle("/api/audit", s.auth(http.HandlerFunc(s.handleAudit)))
+	mux.Handle("/api/skill", s.auth(http.HandlerFunc(s.handleSkill)))
+	mux.Handle("/api/skill/download", s.auth(http.HandlerFunc(s.handleSkillDownload)))
+	mux.Handle("/api/skill/install", s.auth(http.HandlerFunc(s.handleSkillInstall)))
 	mux.Handle("/api/sshconfig", s.auth(http.HandlerFunc(s.handleSSHConfig)))
 	mux.Handle("/api/sshconfig/import", s.auth(http.HandlerFunc(s.handleSSHConfigImport)))
 
