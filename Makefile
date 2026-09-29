@@ -22,7 +22,8 @@ install: build
 desktop:
 	./scripts/build-desktop.sh $(BINARY)
 
-VERSION_NUM := $(shell git describe --tags --always 2>/dev/null | sed 's/^v//' || echo 0.0.0)
+# Package names cannot carry a commit hash, so this is not the same as VERSION.
+VERSION_NUM := $(shell ./scripts/version.sh)
 
 package-deb: desktop
 	mkdir -p dist && cp $(BINARY) dist/ssha
@@ -35,6 +36,23 @@ package-appimage: desktop
 
 package-macos: desktop
 	./packaging/macos/bundle.sh $(BINARY) $(VERSION_NUM) dist/$(BINARY).app
+
+# Cross compiles the Windows build. WebView2.h includes "EventToken.h" with a
+# capital E, which is fine on Windows and not fine on a case-sensitive
+# filesystem, so a one-line shim goes on the include path.
+package-windows:
+	mkdir -p dist .win-shim
+	printf '#include <eventtoken.h>\n' > .win-shim/EventToken.h
+	go run packaging/windows/genrc.go -version $(VERSION_NUM) \
+		-icon packaging/icons/ssha.ico -out packaging/windows/ssha.rc
+	x86_64-w64-mingw32-windres -i packaging/windows/ssha.rc \
+		-o cmd/ssha/rsrc_windows_amd64.syso
+	CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
+		CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
+		CGO_CFLAGS=-I$(CURDIR)/.win-shim CGO_CXXFLAGS=-I$(CURDIR)/.win-shim \
+		go build -tags desktop -trimpath -ldflags "$(LDFLAGS)" -o dist/ssha.exe ./cmd/ssha
+	cd dist && zip -q ssha-$(VERSION_NUM)-windows-x64.zip ssha.exe
+	@echo "dist/ssha-$(VERSION_NUM)-windows-x64.zip"
 
 # Needs root: a system-wide copy plus the dedicated-user service.
 install-system:
@@ -58,4 +76,5 @@ e2e:
 
 clean:
 	rm -f $(BINARY)
-	rm -rf dist
+	rm -rf dist .win-shim
+	rm -f packaging/windows/ssha.rc cmd/ssha/rsrc_windows_amd64.syso

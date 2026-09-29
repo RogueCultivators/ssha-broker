@@ -1,0 +1,38 @@
+// Resource script for the Windows build. windres compiles this into
+// rsrc_windows_amd64.syso next to the package, and the Go linker picks the
+// .syso up on its own: that is how the exe gets an icon in Explorer and a
+// properties tab instead of "unknown application".
+//
+// genrc.go fills in the placeholders, because a .rc cannot be given a version
+// as a define without quoting games, and because paths inside .rc strings treat
+// a backslash as an escape.
+
+#include <winver.h>
+
+1 ICON "@ICON@"
+
+1 VERSIONINFO
+FILEVERSION     @VERSION_COMMA@
+PRODUCTVERSION  @VERSION_COMMA@
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName",      "ssha contributors\0"
+      VALUE "FileDescription",  "ssha - SSH broker for AI agents\0"
+      VALUE "FileVersion",      "@VERSION_STR@\0"
+      VALUE "InternalName",     "ssha\0"
+      VALUE "LegalCopyright",   "MIT License\0"
+      VALUE "OriginalFilename", "ssha.exe\0"
+      VALUE "ProductName",      "ssha\0"
+      VALUE "ProductVersion",   "@VERSION_STR@\0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

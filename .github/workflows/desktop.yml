@@ -28,7 +28,8 @@ jobs:
           fetch-depth: 0
       - id: v
         run: |
-          echo "version=$(git describe --tags --always | sed 's/^v//')" >> "$GITHUB_OUTPUT"
+          # Shared with the Makefile, so local and CI packages agree.
+          echo "version=$(./scripts/version.sh)" >> "$GITHUB_OUTPUT"
           case "$GITHUB_REF" in refs/tags/v*) echo "release=true" >> "$GITHUB_OUTPUT" ;; esac
 
   linux:
@@ -114,7 +115,16 @@ jobs:
           & "$bin\g++.exe" --version | Select-Object -First 1
           & "$bin\windres.exe" --version | Select-Object -First 1
       - name: icon and version resource
-        run: windres -i packaging/windows/ssha.rc -o cmd/ssha/rsrc_windows_amd64.syso
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        # genrc fills in the version and the icon path: a .rc cannot take a
+        # version as a define without quoting games, and backslashes in .rc
+        # strings are escapes. windres has to run before the build, because the
+        # Go linker picks the .syso up from the package directory.
+        run: |
+          go run packaging/windows/genrc.go -version "$env:VERSION" `
+            -icon packaging/icons/ssha.ico -out packaging/windows/ssha.rc
+          windres -i packaging/windows/ssha.rc -o cmd/ssha/rsrc_windows_amd64.syso
       - name: build
         env:
           CGO_ENABLED: "1"
@@ -122,19 +132,13 @@ jobs:
           go build -tags desktop -trimpath `
             -ldflags "-s -w -X main.version=${{ needs.version.outputs.version }}" `
             -o dist/ssha.exe ./cmd/ssha
-      - name: WebView2 loader
-        run: |
-          # webview's Windows backend resolves WebView2Loader.dll at runtime, so it
-          # travels next to the exe. The WebView2 *runtime* itself is part of
-          # Windows 10 and later.
-          curl.exe -sSLo webview2.zip https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2
-          Expand-Archive -Path webview2.zip -DestinationPath webview2 -Force
-          Copy-Item webview2/build/native/x64/WebView2Loader.dll dist/
       - name: package
+        # One file: webview's built-in WebView2 loader looks for the runtime that
+        # ships with Windows 10 and later on its own, so no WebView2Loader.dll
+        # has to travel next to the exe.
         run: |
           $v = '${{ needs.version.outputs.version }}'
-          Compress-Archive -Path dist/ssha.exe, dist/WebView2Loader.dll `
-            -DestinationPath "dist/ssha-$v-windows-x64.zip"
+          Compress-Archive -Path dist/ssha.exe -DestinationPath "dist/ssha-$v-windows-x64.zip"
       - name: smoke test
         run: dist\ssha.exe version
       - uses: actions/upload-artifact@v6

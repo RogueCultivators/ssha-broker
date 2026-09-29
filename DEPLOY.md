@@ -19,13 +19,18 @@ ssha 有一个桌面应用（配置编辑器）和一个命令行 / MCP 服务�
 
 - **Debian / Ubuntu**：`sudo apt install ./ssha_<版本>_amd64.deb` —— 装完应用菜单里就有 ssha
 - **任意 Linux**：`chmod +x ssha-<版本>-x86_64.AppImage && ./ssha-<版本>-x86_64.AppImage`
-- **Windows**：解压 zip，**`WebView2Loader.dll` 必须和 `ssha.exe` 放在同一目录**，然后双击
+- **Windows**：解压 zip 得到 `ssha.exe`，双击。**只有一个文件**，不用带任何 DLL
 - **macOS**：解压 zip 得到 `ssha.app`，拖进「应用程序」
 
 > AppImage 和 deb **不带浏览器引擎**——窗口用的是系统自带的 WebKitGTK。
 > 现在的桌面发行版都有；deb 已经把依赖写进 `Depends`，AppImage 需要你自己确认装了
 > `libwebkit2gtk-4.1`（或 4.0）和 `libgtk-3`。
-> Windows 侧需要 WebView2 运行时，Windows 10/11 自带。
+> Windows 侧需要 WebView2 运行时，Windows 10/11 自带；ssha 会自己去找到它，
+> 所以发行包里没有 `WebView2Loader.dll` 这个文件。
+>
+> 一个已知的取舍：`ssha.exe` 是**控制台子系统**的，双击会同时开一个黑窗口。
+> 这样 `ssha run` / `ssha mcp` 在终端里才有输出——它首先是个命令行工具。
+> 如果你更想要纯粹的双击体验，说一声，改成窗口子系统是几分钟的事。
 
 ### 用脚本从源码装
 
@@ -228,7 +233,7 @@ journalctl --user -u ssha-ui -f
 | `ssha ui` 说「没有图形环境」 | 用 `ssha ui --headless`，或从本机 `ssh -X` |
 | `ssha ui` 说「这个二进制没有编译桌面界面」 | 你装的是纯 Go 版本。用打包版，或 `./scripts/build-desktop.sh`；现在要也行：`--headless` |
 | 窗口打开是空白 | Linux 上大概率缺 `libwebkit2gtk`：`sudo apt install libwebkit2gtk-4.1-0` |
-| Windows 双击没反应 | `WebView2Loader.dll` 没和 exe 放一起，或者缺 WebView2 运行时 |
+| Windows 双击没反应 | 缺 WebView2 运行时（Windows 10/11 自带，精简版系统可能被删） |
 | 应用菜单里没图标 | `gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor`，或者重新登录 |
 | 页面显示「这个界面需要命令行里那个 token」 | 你打开的是裸地址。用打印出来的带 `?token=` 的那条，或从 `--token-file` 里读 |
 | `cannot listen on ... address already in use` | 端口被占（老的 headless 服务？）。`ss -ltnp \| grep 8770` |
