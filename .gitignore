@@ -20,3 +20,7 @@ __pycache__/
 .idea/
 .vscode/
 .DS_Store
+
+# Desktop build output and packaging scratch
+/ssha.desktop-build
+/dist/

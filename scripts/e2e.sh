@@ -540,13 +540,23 @@ contains "a second import skips what is already there" "skipped" "$out"
 # ---------------------------------------------------------------------------
 log "ui (config editor)"
 
+# This is the pure Go build, so asking for a window must explain itself rather
+# than fail obscurely. A desktop build is exercised by the desktop workflow.
+out=$("$BIN" -c "$WORK/ssha.yaml" ui 2>&1); code=$?
+check "ui without a desktop build exits with a message" 1 "$code"
+contains "the message says how to get a window" "桌面界面" "$out"
+contains "and points at the headless mode" "--headless" "$out"
+
 UI_PORT=$(( BASE_PORT + 0 ))
 # Start from the commented template so the edit has real comments to preserve.
 "$BIN" init --out "$WORK/ui.yaml" --force >/dev/null
 # Its own HOME, so the skill locations the editor offers land in the work dir
 # instead of the machine's real ~/.agents/skills.
 mkdir -p "$WORK/home"
-env HOME="$WORK/home" "$BIN" -c "$WORK/ui.yaml" ui --addr 127.0.0.1:$UI_PORT >"$WORK/ui.log" 2>&1 &
+# --headless: this build is the pure Go one, so `ui` on its own has no window
+# and says so. The headless mode is the same handler, which is why it is what
+# the tests drive.
+env HOME="$WORK/home" "$BIN" -c "$WORK/ui.yaml" ui --headless --addr 127.0.0.1:$UI_PORT >"$WORK/ui.log" 2>&1 &
 UI_PID=$!
 for _ in $(seq 1 40); do grep -q 'token=' "$WORK/ui.log" && break; sleep 0.25; done
 TOKEN=$(grep -o 'token=[a-f0-9]*' "$WORK/ui.log" | head -1 | cut -d= -f2)
@@ -560,7 +570,7 @@ contains "the page explains the token to a visitor who lacks one" "这个界面�
 
 # A port we cannot take must fail loudly. Printing a URL for a port somebody
 # else owns would send the operator to the wrong server.
-out=$("$BIN" -c "$WORK/ui.yaml" ui --addr 127.0.0.1:$UI_PORT 2>&1); code=$?
+out=$("$BIN" -c "$WORK/ui.yaml" ui --headless --addr 127.0.0.1:$UI_PORT 2>&1); code=$?
 check "a taken port is reported instead of printing a wrong url" 1 "$code"
 contains "the bind failure is explicit" "无法监听" "$out"
 grep -q "备注" <<<"$(cat "$WORK/page.html")" && pass "the page is the editor (and speaks Chinese)" || fail "the page looks wrong"
@@ -704,14 +714,14 @@ if grep -q "name: ui-made" "$WORK/ui.yaml"; then fail "delete did not remove the
 kill $UI_PID 2>/dev/null
 wait $UI_PID 2>/dev/null
 
-out=$("$BIN" -c "$WORK/ui.yaml" ui --addr 0.0.0.0:$(( BASE_PORT + 1 )) 2>&1); code=$?
+out=$("$BIN" -c "$WORK/ui.yaml" ui --headless --addr 0.0.0.0:$(( BASE_PORT + 1 )) 2>&1); code=$?
 check "the editor refuses a non-loopback address" 1 "$code"
 contains "the refusal explains itself" "拒绝把界面绑到" "$out"
 
 # A persisted token is what makes a bookmarked URL survive a service restart.
 PERSIST_PORT=$(( BASE_PORT + 4 ))
 TF="$WORK/ui.token"
-"$BIN" -c "$WORK/ui.yaml" ui --addr 127.0.0.1:$PERSIST_PORT --token-file "$TF" >"$WORK/ui2.log" 2>&1 &
+"$BIN" -c "$WORK/ui.yaml" ui --headless --addr 127.0.0.1:$PERSIST_PORT --token-file "$TF" >"$WORK/ui2.log" 2>&1 &
 UI2=$!
 for _ in $(seq 1 40); do [ -s "$TF" ] && break; sleep 0.25; done
 first_token=$(cat "$TF" 2>/dev/null)
@@ -720,7 +730,7 @@ mode=$(stat -c '%a' "$TF" 2>/dev/null)
 [ "$mode" = "600" ] && pass "the token file is 0600" || fail "token file mode is $mode"
 kill $UI2 2>/dev/null; wait $UI2 2>/dev/null
 
-"$BIN" -c "$WORK/ui.yaml" ui --addr 127.0.0.1:$PERSIST_PORT --token-file "$TF" >"$WORK/ui3.log" 2>&1 &
+"$BIN" -c "$WORK/ui.yaml" ui --headless --addr 127.0.0.1:$PERSIST_PORT --token-file "$TF" >"$WORK/ui3.log" 2>&1 &
 UI3=$!
 for _ in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$PERSIST_PORT/" && break; sleep 0.25; done
 second_token=$(cat "$TF")

@@ -22,9 +22,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,37 +45,52 @@ type Options struct {
 	ConfigPath string
 	Addr       string
 	Version    string
-	// Open tries to launch the operator's browser.
-	Open bool
 	// TokenFile keeps the access token across restarts so a bookmarked URL keeps
 	// working. Without it the token is fresh every run. The file is created with
 	// mode 0600 if it does not exist.
 	TokenFile string
 }
 
-// Run serves the editor until ctx is cancelled.
-func Run(ctx context.Context, opts Options) error {
-	addr := opts.Addr
-	if addr == "" {
-		addr = "127.0.0.1:8770"
-	}
-	if err := requireLoopback(addr); err != nil {
-		return err
-	}
-
-	token, err := loadToken(opts.TokenFile)
+// New builds the editor: it loads the configuration, opens the audit log and
+// wires the routes. The caller owns the process lifetime, which is what lets the
+// desktop shell host the very same handler in a window.
+func New(cfgPath, version, tokenFile string) (*Server, error) {
+	token, err := loadToken(tokenFile)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	s := &server{cfgPath: opts.ConfigPath, token: token, version: opts.Version}
+	s := &Server{cfgPath: cfgPath, token: token, version: version}
 	if err := s.openBroker(); err != nil {
-		return err
+		return nil, err
 	}
-	defer s.close()
+	s.routes()
+	return s, nil
+}
 
+// Token is the per-run secret every API request must carry.
+func (s *Server) Token() string { return s.token }
+
+// Handler serves the interface and its API.
+func (s *Server) Handler() http.Handler { return s.mux }
+
+// URL is the tokenised address of a listener.
+func (s *Server) URL(addr string) string {
+	return "http://" + addr + "/?token=" + s.token
+}
+
+// ConfigPath is the file being edited.
+func (s *Server) ConfigPath() string { return s.cfgPath }
+
+// Close releases the configuration and the audit log.
+func (s *Server) Close() error {
+	s.close()
+	return nil
+}
+
+func (s *Server) routes() {
 	page, err := fs.ReadFile(assets, "index.html")
 	if err != nil {
-		return err
+		panic("ui: index.html is not embedded: " + err.Error())
 	}
 
 	mux := http.NewServeMux()
@@ -103,31 +116,63 @@ func Run(ctx context.Context, opts Options) error {
 	mux.Handle("/api/sshconfig", s.auth(http.HandlerFunc(s.handleSSHConfig)))
 	mux.Handle("/api/sshconfig/import", s.auth(http.HandlerFunc(s.handleSSHConfigImport)))
 
+	s.mux = mux
+}
+
+// Run serves the editor over HTTP until ctx is cancelled, printing the URL. This
+// is the headless path: a machine with no display, a test, or an operator who
+// wants to reach the editor through an SSH tunnel.
+func Run(ctx context.Context, opts Options) error {
+	addr := opts.Addr
+	if addr == "" {
+		addr = "127.0.0.1:8770"
+	}
+	if err := requireLoopback(addr); err != nil {
+		return err
+	}
+	s, err := New(opts.ConfigPath, opts.Version, opts.TokenFile)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
 	// Bind before announcing anything: printing a URL for a port we failed to
 	// take would send the operator to whatever else is listening there.
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("无法监听 %s：%w", addr, err)
 	}
+	url := s.URL(ln.Addr().String())
+	fmt.Fprintf(os.Stderr,
+		"ssha 配置界面（headless）\n"+
+			"  配置文件：%s\n"+
+			"\n"+
+			"  用浏览器打开下面这条地址（token 必须带，每次启动都会变）：\n"+
+			"    %s\n\n", s.cfgPath, url)
 
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	return s.serve(ctx, ln)
+}
+
+// ServeLoopback binds a free loopback port and returns its tokenised URL. The
+// desktop window loads that, so the transport stays on the machine and nobody
+// is handed an address to open in a browser.
+func (s *Server) ServeLoopback(ctx context.Context) (string, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	go func() { _ = s.serve(ctx, ln) }()
+	return s.URL(ln.Addr().String()), nil
+}
+
+func (s *Server) serve(ctx context.Context, ln net.Listener) error {
+	srv := &http.Server{Handler: s.mux, ReadHeaderTimeout: 10 * time.Second}
 	errCh := make(chan error, 1)
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
-
-	url := "http://" + ln.Addr().String() + "/?token=" + token
-	fmt.Fprintf(os.Stderr,
-		"ssha 配置界面\n"+
-			"  配置文件：%s\n"+
-			"\n"+
-			"  用浏览器打开下面这条地址（token 必须带，每次启动都会变）：\n"+
-			"    %s\n\n", s.cfgPath, url)
-	if opts.Open {
-		openBrowser(url)
-	}
 
 	select {
 	case <-ctx.Done():
@@ -193,16 +238,17 @@ func requireLoopback(addr string) error {
 // server
 // ---------------------------------------------------------------------------
 
-type server struct {
+type Server struct {
 	cfgPath string
 	token   string
 	version string
 
-	mu sync.Mutex
-	b  *broker.Broker
+	mu  sync.Mutex
+	b   *broker.Broker
+	mux *http.ServeMux
 }
 
-func (s *server) openBroker() error {
+func (s *Server) openBroker() error {
 	// The editor is the operator's own console, so it sees real addresses and
 	// unredacted output: it is the thing they are configuring.
 	b, err := broker.OpenWithOptions(s.cfgPath, broker.Options{Reveal: true})
@@ -213,7 +259,7 @@ func (s *server) openBroker() error {
 	return nil
 }
 
-func (s *server) close() {
+func (s *Server) close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.b != nil {
@@ -223,7 +269,7 @@ func (s *server) close() {
 }
 
 // reload re-reads the config so the next request sees the edit.
-func (s *server) reload() error {
+func (s *Server) reload() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b, err := broker.OpenWithOptions(s.cfgPath, broker.Options{Reveal: true})
@@ -237,7 +283,7 @@ func (s *server) reload() error {
 	return nil
 }
 
-func (s *server) broker() *broker.Broker {
+func (s *Server) broker() *broker.Broker {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.b
@@ -245,7 +291,7 @@ func (s *server) broker() *broker.Broker {
 
 // auth enforces the per-run token. A custom header also means a cross-origin
 // page cannot reach the API without a CORS preflight we never approve.
-func (s *server) auth(next http.Handler) http.Handler {
+func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 			http.Error(w, "cross-site request refused", http.StatusForbidden)
@@ -300,7 +346,7 @@ type statePayload struct {
 	Hosts      []hostView  `json:"hosts"`
 }
 
-func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	b := s.broker()
 	cfg := b.Config()
 	out := statePayload{
@@ -355,7 +401,7 @@ func hostWarnings(h *config.Host, spec config.Spec) []string {
 // hosts
 // ---------------------------------------------------------------------------
 
-func (s *server) handleHosts(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		writeErr(w, http.StatusMethodNotAllowed, errors.New("请用 POST"))
@@ -382,7 +428,7 @@ func (s *server) handleHosts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "host": h.Name})
 }
 
-func (s *server) handleHost(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleHost(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/hosts/")
 	if name == "" {
 		writeErr(w, http.StatusBadRequest, errors.New("需要主机名称"))
@@ -412,7 +458,7 @@ func (s *server) handleHost(w http.ResponseWriter, r *http.Request) {
 // higher-precedence environment variable on that host. Leaving it would make
 // the freshly typed secret silently useless, which is the worse surprise; the
 // response says what was cleared so the editor can tell the operator.
-func (s *server) handleSecret(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSecret(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Host  string `json:"host"`
 		Kind  string `json:"kind"`
@@ -484,7 +530,7 @@ func (s *server) handleSecret(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *server) handleTest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Name  string `json:"name"`
 		Probe string `json:"probe"`
@@ -498,7 +544,7 @@ func (s *server) handleTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.broker().Test(ctx, in.Name, in.Probe))
 }
 
-func (s *server) handleHostKey(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleHostKey(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Addr string `json:"addr"`
 		Port int    `json:"port"`
@@ -538,7 +584,7 @@ func (s *server) handleHostKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"keys": out})
 }
 
-func (s *server) handleAudit(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	if limit <= 0 {
@@ -579,7 +625,7 @@ type importCandidate struct {
 	Warnings  []string `json:"warnings,omitempty"`
 }
 
-func (s *server) importCandidates(file string) ([]importCandidate, []string, error) {
+func (s *Server) importCandidates(file string) ([]importCandidate, []string, error) {
 	if file == "" {
 		file = sshconfig.DefaultPath()
 	}
@@ -613,7 +659,7 @@ func (s *server) importCandidates(file string) ([]importCandidate, []string, err
 	return out, res.Warnings, nil
 }
 
-func (s *server) handleSSHConfig(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSSHConfig(w http.ResponseWriter, r *http.Request) {
 	candidates, warnings, err := s.importCandidates(r.URL.Query().Get("file"))
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
@@ -630,7 +676,7 @@ func (s *server) handleSSHConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *server) handleSSHConfigImport(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSSHConfigImport(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		File       string   `json:"file"`
 		Aliases    []string `json:"aliases"`
@@ -709,20 +755,4 @@ func (s *server) handleSSHConfigImport(w http.ResponseWriter, r *http.Request) {
 		"skipped":  skipped,
 		"warnings": warnings,
 	})
-}
-
-func openBrowser(url string) {
-	var cmd string
-	var args []string
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = "open"
-	case "windows":
-		cmd, args = "rundll32", []string{"url.dll,FileProtocolHandler"}
-	default:
-		cmd = "xdg-open"
-	}
-	if err := exec.Command(cmd, append(args, url)...).Start(); err != nil {
-		slog.Warn("could not open a browser", "err", err, "url", url)
-	}
 }

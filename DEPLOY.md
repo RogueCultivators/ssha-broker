@@ -1,149 +1,131 @@
 # 部署说明
 
-ssha 是单个静态二进制，部署就是「放一个文件 + 装一个 systemd unit」。
-这里给两种方式，**先说结论**：
+ssha 有一个桌面应用（配置编辑器）和一个命令行 / MCP 服务端。两者是同一个二进制，
+桌面界面在 `desktop` 构建标签后面，所以**纯 Go 构建照旧能在任何地方编译**，只是没有窗口。
 
-| | 用户服务（`--user`） | 系统服务（`--system`，推荐） |
-|---|---|---|
-| 需要 root | 不需要 | 需要 |
-| 二进制 | `~/.local/bin/ssha` | `/usr/local/bin/ssha` |
-| 配置 | `~/.config/ssha/config.yaml` | `/etc/ssha/config.yaml` |
-| 凭证可读性 | 你自己（agent 同账号就能读） | **只有 `ssha` 用户和 root** |
-| 适合 | 单机自用、试水 | 让 agent 连生产机 |
-
-差别只在**凭证隔离**：用户服务下，agent 进程（和你同账号）在文件系统上就能读到
-`~/.config/ssha/` 和 `~/.ssh/`；系统服务下它读不到。想按 §「为什么值得用系统服务」那条做，
-就用系统服务。
+| 你想要 | 怎么装 |
+|---|---|
+| 在自己电脑上编辑配置 | `.deb` / AppImage / `.exe` / macOS `.zip`，或者 `./packaging/install.sh --user` |
+| 让 agent 通过 MCP 连生产机 | `sudo ./packaging/install.sh --system --with-mcp` |
+| 纯命令行 / 无显示器 | `go build ./cmd/ssha`，用 `ssha run` / `ssha mcp` |
 
 ---
 
-## 一、最快路径
+## 一、安装桌面应用
+
+### 用打包好的（推荐）
+
+从 [Releases](https://github.com/RogueCultivators/ssha-broker/releases) 下载：
+
+- **Debian / Ubuntu**：`sudo apt install ./ssha_<版本>_amd64.deb` —— 装完应用菜单里就有 ssha
+- **任意 Linux**：`chmod +x ssha-<版本>-x86_64.AppImage && ./ssha-<版本>-x86_64.AppImage`
+- **Windows**：解压 zip，**`WebView2Loader.dll` 必须和 `ssha.exe` 放在同一目录**，然后双击
+- **macOS**：解压 zip 得到 `ssha.app`，拖进「应用程序」
+
+> AppImage 和 deb **不带浏览器引擎**——窗口用的是系统自带的 WebKitGTK。
+> 现在的桌面发行版都有；deb 已经把依赖写进 `Depends`，AppImage 需要你自己确认装了
+> `libwebkit2gtk-4.1`（或 4.0）和 `libgtk-3`。
+> Windows 侧需要 WebView2 运行时，Windows 10/11 自带。
+
+### 用脚本从源码装
 
 ```bash
 git clone https://github.com/RogueCultivators/ssha-broker && cd ssha-broker
-./packaging/install.sh --user        # 或者： sudo ./packaging/install.sh --system
+./packaging/install.sh --user        # 不需要 root
 ```
 
-脚本会：构建（带 `git describe` 版本号）→ 装二进制 → 准备配置（**已存在就不覆盖**）→
-装并启动 unit → 启用 linger（用户服务）/ 创建 `ssha` 用户（系统服务）→ 打印带 token 的地址。
+它会：编译桌面版（缺 GTK/WebKit 开发包时退回纯命令行并提示）→ 装二进制到
+`~/.local/bin/ssha` → 装图标到 `~/.local/share/icons/hicolor/*/apps/` → 装启动器到
+`~/.local/share/applications/ssha.desktop` → 刷新桌面缓存。
 
-跑完之后：
+然后从**应用菜单**打开 ssha，或者命令行 `ssha ui`。没有后台服务，没有端口，没有浏览器。
 
-```
-ssha 配置界面
-  配置文件：~/.config/ssha/config.yaml
+系统级（所有用户都能从菜单打开）：`sudo ./packaging/install.sh --system`。
 
-  用浏览器打开下面这条地址（token 必须带，每次启动都会变）：
-    http://127.0.0.1:8770/?token=REPLACE-WITH-YOUR-TOKEN
-```
-
-**把这条 URL 收藏起来**：token 存在 `~/.local/state/ssha/ui.token`（或
-`/var/lib/ssha/ui.token`）里，重启不变，所以收藏夹一直有效。
-
-其他可选项：
+### 从源码手动构建
 
 ```bash
-./packaging/install.sh --user --port 8900          # 换 UI 端口
-sudo ./packaging/install.sh --system --with-mcp    # 同时装 agent 用的 MCP HTTP 服务
-sudo ./packaging/install.sh --system --user-name ssha-ops
+# 只看命令行
+go build -o ssha ./cmd/ssha
+
+# 带桌面窗口（需要 GTK3 + WebKitGTK 开发包）
+sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev     # Debian/Ubuntu
+./scripts/build-desktop.sh ssha                          # 会自动处理 4.0/4.1 的差异
 ```
 
-脚本是幂等的：再跑一次只升级二进制和 unit，不动你的配置和审计日志。
+Ubuntu 24.04 起只剩 `webkit2gtk-4.1`，而 Go 绑定写死了 `webkit2gtk-4.0`。
+`scripts/build-desktop.sh` 会临时生成一个别名 `.pc` 文件来弥合——底层的 C++ 库运行时
+本来就同时加载 4.1 和 4.0，所以这不是打补丁，也不需要 vendor 任何东西。
 
----
-
-## 二、手工安装（不想跑脚本）
-
-### 1. 构建并放好二进制
+打包：
 
 ```bash
-make build                                     # 产出 ./ssha
-install -Dm755 ssha ~/.local/bin/ssha          # 用户服务
-sudo install -Dm755 ssha /usr/local/bin/ssha   # 系统服务
-ssha version
-```
-
-`make install PREFIX=/usr/local`（需权限）也可以，等价于上面第二条。
-版本号来自 `git describe`，没有 tag 时是 commit 短哈希。
-
-### 2. 准备配置
-
-```bash
-# 用户服务
-install -d -m 700 ~/.config/ssha ~/.local/state/ssha
-ssha init --out ~/.config/ssha/config.yaml
-
-# 系统服务
-sudo install -d -m 700 -o ssha -g ssha /etc/ssha /var/lib/ssha
-sudo -u ssha ssha init --out /etc/ssha/config.yaml
-```
-
-配置文件里**没有明文密码**（只有 `password_file` / `password_env` 这类来源），但仍然建议 0600：
-
-```bash
-chmod 600 ~/.config/ssha/config.yaml
-```
-
-密码可以直接在界面里输（推荐）：打开主机，认证类型选「密码」，输进去保存——ssha 会写成
-`secrets/<主机>.password`（0600），配置里只留一行 `password_file`。
-
-也可以自己准备文件：
-
-```bash
-install -m 600 /dev/null ~/.config/ssha/prod.pass
-read -rs -p 'password: ' P && printf '%s\n' "$P" > ~/.config/ssha/prod.pass
-```
-
-### 3. 装 unit
-
-```bash
-# 用户服务
-install -Dm644 packaging/systemd/ssha-ui.user.service ~/.config/systemd/user/ssha-ui.service
-systemctl --user daemon-reload
-systemctl --user enable --now ssha-ui
-
-# 系统服务
-sudo install -m 644 packaging/systemd/ssha-ui.service /etc/systemd/system/
-sudo install -m 644 packaging/systemd/ssha-mcp.service /etc/systemd/system/   # 可选
-sudo systemctl daemon-reload
-sudo systemctl enable --now ssha-ui
-```
-
-用户服务还要让它在**登出后继续跑**：
-
-```bash
-loginctl enable-linger "$USER"          # 一般不需要 sudo；失败就 sudo 一次
-loginctl show-user "$USER" -p Linger    # 期望 Linger=yes
+make desktop          # dist 之外的 ./ssha，带窗口
+make package-deb      # 需要 nfpm
+make package-appimage # 需要 appimagetool
+make package-macos    # 只在 macOS 上有意义
 ```
 
 ---
 
-## 三、unit 里几个关键点
+## 二、配置放哪
 
-```ini
-ExecStart=%h/.local/bin/ssha --config %h/.config/ssha/config.yaml ui \
-          --addr 127.0.0.1:8770 --token-file %h/.local/state/ssha/ui.token
+| | 路径 |
+|---|---|
+| 配置 | `~/.config/ssha/config.yaml`（系统级装在 `/etc/ssha/config.yaml`） |
+| 密码 | 配置旁边的 `secrets/<主机名>.password`，0600 |
+| 审计日志 | `~/.local/share/ssha/audit.jsonl`（或配置里 `audit.path`） |
+
+第一次打开时如果没有配置，ssha 会从模板生成一份。密码直接在界面里输，
+它会写成 0600 的文件，配置里只留一行 `password_file` 指过去。
+
+配置文件里**没有明文密码**，但主机清单和策略都在里面，建议保持 0600。
+
+---
+
+## 三、让 agent 用起来
+
+两条路，可以只用一条，也可以都用。
+
+### 1. Skill（用命令行工具的 agent：pi、Claude Code 之类）
+
+在桌面应用的「**接入 agent**」面板里，点一下「安装」——它会写到你选的位置：
+
+| 位置 | 谁读它 |
+|---|---|
+| `~/.agents/skills` | pi 和 Claude Code 都认（通用位置） |
+| `~/.pi/agent/skills` | pi 自己的位置 |
+| `~/.claude/skills` | Claude Code 自己的位置 |
+
+等价命令：`ssha skill install`。面板里还能「复制 SKILL.md」，给没有 ssha 的机器用。
+
+### 2. MCP（Codex、Claude Code、Cursor 等）
+
+**stdio，最省事**——把这段放进对应客户端的配置：
+
+```json
+{ "mcpServers": { "ssha": { "command": "/home/你/.local/bin/ssha", "args": ["mcp"] } } }
 ```
 
-- **`--config` 必须写在子命令前面**：它是全局 flag，`ssha ui --config X` 虽然也认，
-  但写成上面这样最不容易踩坑。
-- **`--token-file`**：不写的话 token 每次启动都变，书签就白收藏了。文件不存在会自动生成，
-  权限 0600。
-- **`--addr` 默认就是 `127.0.0.1:8770`**。编辑器**拒绝绑定非回环地址**——它显示真实地址、
-  未脱敏输出，等于你的控制台，不能监听公网。要从别的机器访问就端口转发：
+Codex 是 `~/.codex/config.toml`：
 
-  ```bash
-  ssh -L 8770:127.0.0.1:8770 you@这台机器
-  # 然后本地浏览器打开单位里打印的那条带 token 的地址
-  ```
+```toml
+[mcp_servers.ssha]
+command = "/home/你/.local/bin/ssha"
+args = ["mcp"]
+```
 
-- 硬化的那几个开关（`ProtectSystem`、`NoNewPrivileges`、`PrivateTmp`…）对 ssha 是安全的：
-  它只读 `~/.ssh` 和 `/etc/ssha`，只写审计日志和 token 文件。
+路径用**绝对路径**：从桌面会话启动的客户端，PATH 未必和你 shell 里一样。
+桌面应用的「接入 agent」面板会直接生成好这段，带复制按钮。
 
-### agent 用的 MCP 服务
+**HTTP，给别的机器上的 agent**：
 
-`ssha-mcp.service` 跑的是 `ssha mcp --http 127.0.0.1:8765`，给 Codex / Claude Code / Cursor 用。
-它**必须**在配置里配了 `server.tokens` 才能对外，否则只会拒绝绑定非回环地址（这是设计）：
+```bash
+sudo ./packaging/install.sh --system --with-mcp
+```
+
+这会在 `/etc/ssha/config.yaml` 上跑一个 `ssha-mcp.service`，用专用 `ssha` 用户，监听
+`127.0.0.1:8765`。要对外必须配 token：
 
 ```yaml
 server:
@@ -154,7 +136,7 @@ server:
       tags: [staging]        # 这个 token 只够得着 staging
 ```
 
-token 的值从环境变量读，所以给它加一个 drop-in（不要写进 unit 文件，那会进 `systemd show`）：
+token 的值从环境变量读，用 drop-in 给（别写进 unit 文件，那会进 `systemctl show`）：
 
 ```bash
 sudo systemctl edit ssha-mcp
@@ -163,8 +145,7 @@ sudo systemctl edit ssha-mcp
 ```ini
 [Service]
 Environment=SSHA_TOKEN_AGENT=改成随机串
-# 密码来源同理：
-# Environment=SSHA_DB_PASSWORD=...
+Environment=SSHA_DB_PASSWORD=...
 ```
 
 ```bash
@@ -172,42 +153,44 @@ sudo chmod 600 /etc/systemd/system/ssha-mcp.service.d/override.conf
 sudo systemctl restart ssha-mcp
 ```
 
-客户端只配一个 URL 和头：
+### 为什么 MCP 服务要用专用用户
 
-```json
-{ "mcpServers": { "ssha": {
-    "url": "http://127.0.0.1:8765/mcp",
-    "headers": { "Authorization": "Bearer <token>" } } } }
+这是唯一能让「agent 读不到凭证」变成权限而不是约定的办法：`ssha-mcp` 以 `ssha` 用户跑，
+配置在 `/etc/ssha`（0600，属主 ssha），而 agent 进程和你在同一个账号下，**在文件系统上读不到**。
+
+```bash
+sudo -u ssha ssha --config /etc/ssha/config.yaml hosts test web-1   # 成功
+cat /etc/ssha/config.yaml                                           # permission denied
 ```
+
+注意：桌面应用是以**你自己**的身份跑的（它要编辑你的 `~/.config/ssha/`），
+所以它能看到全部凭证——它本来就是你运维用的控制台。要让 agent 也读不到，
+agent 走 MCP 服务那条路。
 
 ---
 
-## 四、为什么值得用系统服务
+## 四、无显示器的机器
 
-用 `--system` 的收益就一句话：**agent 进程在文件系统上读不到你的凭证**。
+桌面窗口需要图形环境。在服务器上、CI 里、或者你只想通过 SSH 转发用浏览器时：
 
 ```bash
-sudo useradd --system --create-home --shell /usr/sbin/nologin ssha
-sudo install -d -m 700 -o ssha -g ssha /etc/ssha /var/lib/ssha
-sudo install -m 600 -o ssha -g ssha ssha.yaml /etc/ssha/config.yaml
-# 密码文件同样归 ssha 所有、0600
+ssha ui --headless                          # 起一个本地服务并打印带 token 的地址
+ssha ui --headless --addr 127.0.0.1:8770
 ```
 
-之后 `ssha ui` 和 `ssha mcp` 都以 `ssha` 用户跑：
-
-- 你（`ch`）能打开编辑器——因为编辑器是 `ssha` 用户跑的进程，只是**通过 HTTP** 把结果给你；
-- 而 agent（和 `ch` 同账号）读不到 `/etc/ssha/config.yaml`、`/var/lib/ssha/ui.token`、
-  也读不到 `ssha` 用户的 `~/.ssh`；
-- 编辑器里那个 `--reveal`（显示真实地址、不脱敏）也就在你手里，agent 那条路径上
-  `ssha mcp` 是强制忽略它的。
-
-这是把手写配置的「约定」变成「权限」的唯一办法。`packaging/install.sh --system` 就是把这套做完。
-
-验证一下隔离真的成立：
+想要它常驻：
 
 ```bash
-sudo -u ssha ssha --config /etc/ssha/config.yaml hosts test web-1   # 应该成功
-cat /etc/ssha/config.yaml                                           # 应该 permission denied
+./packaging/install.sh --user --headless-service          # 用户级
+sudo ./packaging/install.sh --system --headless-service   # 系统级
+```
+
+从别的机器访问（它是故意只监听回环的）：
+
+```bash
+ssh -L 8770:127.0.0.1:8770 you@那台机器
+# 然后本地浏览器打开 journalctl 里打印的那条带 token 的地址
+journalctl --user -u ssha-ui -n 20 --no-pager | grep -o 'http://127.0.0.1:[0-9]*/?token=[a-f0-9]*' | tail -1
 ```
 
 ---
@@ -215,82 +198,58 @@ cat /etc/ssha/config.yaml                                           # 应该 per
 ## 五、日常操作
 
 ```bash
-# 用户服务
-systemctl --user status ssha-ui        # 看状态
-systemctl --user restart ssha-ui       # 改完配置重启（其实不必须：编辑自己会重载）
-journalctl --user -u ssha-ui -f        # 看日志
-journalctl --user -u ssha-ui -n 20 | grep token=   # 找回带 token 的 URL
-systemctl --user disable --now ssha-ui # 停掉并取消自启
+# 桌面应用
+ssha ui                      # 打开窗口（应用菜单里也是这个）
+ssha ui --headless           # 不开窗口，改成服务
 
-# 系统服务：把 --user 去掉、前面加 sudo
-sudo systemctl status ssha-ui
-sudo journalctl -u ssha-ui -n 20 | grep token=
+# 命令行
+ssha hosts list && ssha hosts test web-1
+ssha hosts find payment      # 按备注找机器
+ssha audit verify            # 校验审计哈希链
+ssha version
+
+# 后台服务（只有用 --headless-service / --with-mcp 装过才有）
+systemctl --user status ssha-ui        # 或 sudo systemctl status ssha-mcp
+journalctl --user -u ssha-ui -f
 ```
-
-打开编辑器的两种方式：
-
-```bash
-echo "http://127.0.0.1:8770/?token=$(cat ~/.local/state/ssha/ui.token)"   # 用户服务
-sudo cat /var/lib/ssha/ui.token | xargs -I{} echo "http://127.0.0.1:8770/?token={}"
-```
-
-或者从 journal 里捞（每次启动都会打一遍；`ExecStart` 里没有 URL，别去那里找）：
-
-```bash
-journalctl --user -u ssha-ui -n 50 --no-pager | grep -o 'http://127.0.0.1:[0-9]*/?token=[a-f0-9]*' | tail -1
-```
-
----
 
 ## 六、升级
 
-```bash
-git pull
-./packaging/install.sh --user          # 或 sudo ./packaging/install.sh --system
-```
+- 装了包：`sudo apt install ./ssha_<新版本>_amd64.deb`
+- 脚本装的：`git pull && ./packaging/install.sh --user`
+- 升级前想稳一点：`ssha audit verify`
 
-二进制和 unit 会更新，配置不动。编辑器的 token 文件保留，所以书签继续有效。
-升级前想稳一点，先看一眼审计链：
-
-```bash
-ssha audit verify
-```
-
-回滚就是把二进制换回旧版本再 `restart`；配置的每次编辑都会留 `config.yaml.bak`。
-
----
+配置、密钥和审计日志都不会被动。桌面应用的配置每次编辑都会留 `config.yaml.bak`。
 
 ## 七、排障
 
-| 现象 | 原因 / 处理 |
+| 现象 | 处理 |
 |---|---|
-| 页面显示「这个界面需要命令行里那个 token」 | 你打开了裸地址。用 `?token=` 那条 URL，或从 `--token-file` 里读 |
-| `cannot listen on 127.0.0.1:8770: address already in use` | 端口被占。`ss -ltnp \| grep 8770`，或换 `--port` |
-| `status` 里 `Active: activating (auto-restart)` | 看 `journalctl -u ssha-ui -n 50`，通常是 `--config` 指向的文件不存在或校验失败 |
-| 改完 unit 不生效 | 忘了 `systemctl --user daemon-reload`（系统服务是 `sudo systemctl daemon-reload`） |
-| 登出后服务没了 | `loginctl enable-linger $USER` 没开 |
-| 浏览器里列表空、右上角报错 | 那是 401：URL 里的 token 过期（比如上一次跑的），用当前 token 重新打开 |
-| `hosts test` 报 `unknown host key` | 该主机没钉主机密钥，且不在 `host_key.known_hosts` 里。用界面里的扫描按钮，或 `ssha host-key <addr> --write` |
-| agent 报 `no password source configured` | 密码来源没配。MCP 不会交互式提问。最简单的办法是打开 `ssha ui`，在主机里选「密码」直接把密码输进去（会存成配置旁边的 `secrets/<主机>.password`，0600）；也可以自己给 `password_file` / `password_env` |
-
----
+| `ssha ui` 说「没有图形环境」 | 用 `ssha ui --headless`，或从本机 `ssh -X` |
+| `ssha ui` 说「这个二进制没有编译桌面界面」 | 你装的是纯 Go 版本。用打包版，或 `./scripts/build-desktop.sh`；现在要也行：`--headless` |
+| 窗口打开是空白 | Linux 上大概率缺 `libwebkit2gtk`：`sudo apt install libwebkit2gtk-4.1-0` |
+| Windows 双击没反应 | `WebView2Loader.dll` 没和 exe 放一起，或者缺 WebView2 运行时 |
+| 应用菜单里没图标 | `gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor`，或者重新登录 |
+| 页面显示「这个界面需要命令行里那个 token」 | 你打开的是裸地址。用打印出来的带 `?token=` 的那条，或从 `--token-file` 里读 |
+| `cannot listen on ... address already in use` | 端口被占（老的 headless 服务？）。`ss -ltnp \| grep 8770` |
+| agent 报 `no password source configured` | 该主机没配密码。在桌面应用里选「密码」直接输入，或填 `password_file` / `password_env` |
+| `hosts test` 报 `unknown host key` | 没钉主机密钥。界面里点「扫描主机密钥」，或 `ssha host-key <addr> --write` |
+| 找不到 skill | 确认装到了 agent 会扫的目录（通常是 `~/.agents/skills`），然后重启 agent |
 
 ## 八、卸载
 
 ```bash
-# 用户服务
-systemctl --user disable --now ssha-ui
-rm -f ~/.config/systemd/user/ssha-ui.service ~/.local/bin/ssha
-rm -rf ~/.config/ssha ~/.local/state/ssha      # 配置 + token + 审计（注意备份）
-systemctl --user daemon-reload
+# 用户级
+rm -f ~/.local/bin/ssha ~/.local/share/applications/ssha.desktop
+rm -rf ~/.local/share/icons/hicolor/*/apps/ssha.png
+rm -rf ~/.config/ssha ~/.local/share/ssha      # 配置 + 密码 + 审计，先备份！
+gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
 
-# 系统服务
-sudo systemctl disable --now ssha-ui ssha-mcp
-sudo rm -f /etc/systemd/system/ssha-ui.service /etc/systemd/system/ssha-mcp.service /usr/local/bin/ssha
-sudo rm -rf /etc/ssha /var/lib/ssha            # 先备份审计日志
+# 系统级
+sudo systemctl disable --now ssha-mcp ssha-ui
+sudo rm -f /usr/local/bin/ssha /usr/share/applications/ssha.desktop
+sudo rm -rf /usr/share/ssha /etc/ssha /var/lib/ssha
 sudo userdel ssha
-sudo systemctl daemon-reload
 ```
 
-审计日志（`audit.jsonl`）是唯一不可再生的东西，卸载前先拷走：
-`~/.local/share/ssha/` 或配置里 `audit.path` 指的位置。
+审计日志（`audit.jsonl`）是唯一不可再生的东西，卸载前先拷走。

@@ -75,7 +75,7 @@ func executablePath() string {
 	return "ssha"
 }
 
-func (s *server) mcpSnippets() []mcpSnippet {
+func (s *Server) mcpSnippets() []mcpSnippet {
 	bin := executablePath()
 	// Structs, not maps: a map marshals its keys alphabetically, and a snippet
 	// people copy should read the way the documentation writes it.
@@ -135,7 +135,7 @@ func (s *server) mcpSnippets() []mcpSnippet {
 // handleSkill reports what the skill is, where it can go, and how an agent
 // connects. The skill text is not a secret: it ships in the binary and in the
 // repository.
-func (s *server) handleSkill(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSkill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":    skills.Name,
 		"content": skills.Content,
@@ -147,7 +147,7 @@ func (s *server) handleSkill(w http.ResponseWriter, r *http.Request) {
 
 // handleSkillDownload serves the raw markdown so the operator can copy it to a
 // machine that does not have ssha installed.
-func (s *server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="SKILL.md"`)
 	_, _ = w.Write([]byte(skills.Content))
@@ -158,7 +158,7 @@ func (s *server) handleSkillDownload(w http.ResponseWriter, r *http.Request) {
 // The editor only ever writes this one file and one directory deep, so a dir of
 // "..", a relative path or a path that is not a directory is refused rather than
 // followed.
-func (s *server) handleSkillInstall(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSkillInstall(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Dir string `json:"dir"`
 	}

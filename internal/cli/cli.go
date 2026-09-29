@@ -43,7 +43,8 @@ Commands:
   audit show <id>          show one audit record
   audit verify             verify the audit hash chain
   mcp                      serve MCP on stdio (for coding agents)
-  ui                       open a local web editor for this config
+  ui                       open the config editor in a desktop window
+  ui --headless            ...or as a local http service, printing the url
   skill install            install the agent skill into ~/.agents/skills
   skill print              print the agent skill to stdout
   version                  print the version

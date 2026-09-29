@@ -47,6 +47,7 @@ codex / pi / claude / cursor ─────┐         │                    �
 | 工具数量 | 动辄 30+ | 7 个，面向模型选择准确率设计 |
 | 服务发现 | 只有 IP 列表，模型得猜哪台跑什么 | 每台机器一条自由文本**备注**（跑什么、单元名、日志路径），`ssh_list_hosts --query payment` 直接定位到机器 |
 | 主机身份 | agent 直连，地址/账号全暴露 | `disclosure` + `redact_output` 可只给别名，输出、错误、审计里的地址/账号全部换成 `<host>`/`<user>` |
+| 配置方式 | 手写客户端配置 | 桌面应用（窗口，不是浏览器页面）+ `.deb`/AppImage/`.exe`/macOS 打包 |
 | 超时/输出上限 | agent 说了算 | 策略设上限，agent 只能收紧不能放宽 |
 | 多主机 | 逐个 | `ssh_exec_many` 按 tag 并行下发 |
 | 凭证类型 | 通常是 key 文件 | key / ssh-agent / password(env) / 加密 key + passphrase / ProxyJump |
@@ -63,15 +64,25 @@ install -m 0755 ssha ~/.local/bin/ssha      # 或者 go install ./cmd/ssha
 ssha version
 ```
 
-要求 Go 1.25+（依赖 `modelcontextprotocol/go-sdk`）。产物是单个静态二进制，可交叉编译到
-Linux/macOS/Windows。
+要求 Go 1.25+（依赖 `modelcontextprotocol/go-sdk`）。
 
-装好之后想让它常驻（尤其是把配置编辑器开成服务），见 **[DEPLOY.md](DEPLOY.md)**：
+**配置编辑器是一个桌面应用**（系统自带 webview 的窗口，不是浏览器页面），
+命令行、MCP 服务端和它同一个二进制。桌面界面在 `desktop` 构建标签后面，
+所以纯 Go 构建照旧能在任何地方编译：
 
 ```bash
-./packaging/install.sh --user      # 无需 root：~/.local/bin + systemd 用户服务
-sudo ./packaging/install.sh --system   # 专用 ssha 用户 + /usr/local/bin + 系统服务
+go build -o ssha ./cmd/ssha              # 命令行 + MCP + headless，无 cgo
+./scripts/build-desktop.sh ssha          # 加上窗口（需要 GTK3 + WebKitGTK 开发包）
 ```
+
+有现成的 `.deb` / AppImage / `.exe` / macOS zip，也可以一条命令装：
+
+```bash
+./packaging/install.sh --user                    # 装桌面应用（无需 root）
+sudo ./packaging/install.sh --system --with-mcp  # 再给 agent 装一个 MCP 网关
+```
+
+细节见 **[DEPLOY.md](DEPLOY.md)**。
 
 ## 3. 快速开始
 
@@ -390,19 +401,21 @@ testbox     ok      key       -    SHA256:Pp9s7QXv... (ecdsa-sha2-nistp256)   10
 legacy-db   FAIL    password  -    -                                          47ms    ... the password is probably wrong
 ```
 
-## 5. 配置界面（`ssha ui`）
+## 5. 桌面应用（`ssha ui`）
 
-YAML 不适合做「巡检了一遍发现某台机器少配了主机密钥」这种事，所以带了一个本地网页编辑器：
+YAML 不适合做「巡检了一遍发现某台机器少配了主机密钥」这种事，所以带了一个桌面应用：
 
 ```bash
-ssha ui                       # 127.0.0.1:8770，把带 token 的地址打到 stderr
-ssha ui --open                # 顺手打开浏览器
-ssha ui --addr 127.0.0.1:9000
-ssha ui --token-file ~/.local/state/ssha/ui.token   # token 跨重启不变，URL 可收藏
+ssha ui                      # 打开窗口（应用菜单里也是这个）
+ssha ui --headless           # 无图形环境时：起一个本地服务并打印带 token 的地址
 ```
 
-想让它常驻就别手动跑：`./packaging/install.sh --user` 会装成 systemd 用户服务并打印可收藏的
-地址，`--system` 则是专用用户 + 系统服务（凭证对 agent 不可读）。细节见 [DEPLOY.md](DEPLOY.md)。
+窗口用的是系统自带的 webview（Linux 上是 WebKitGTK，Windows 上是 WebView2，macOS 上是
+WKWebView）。**没有浏览器参与**：不打印 URL，不开端口给外面，页面和处理器是复用的那一套，
+所以 e2e 能覆盖到的界面行为就是窗口里的行为。
+
+`--headless` 是给服务器、CI 和「只想通过 SSH 隧道用浏览器」的人留的口子，
+它才是有端口和 token 的那个模式。
 
 它做四件事：
 

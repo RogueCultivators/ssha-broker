@@ -27,19 +27,26 @@
     }
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
-    margin: 0; background: var(--bg); color: var(--text);
+    margin: 0; overflow: hidden; background: var(--bg); color: var(--text);
     font: 14px/1.6 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    /* Desktop app, not a web page: chrome is not text to select, and the cursor
+       only turns into a caret where you can actually type. */
+    user-select: none; cursor: default;
   }
+  input, textarea, pre.snippet, .hostlist, table { user-select: text; }
+  input, textarea { cursor: text; }
   header {
-    display: flex; align-items: baseline; gap: 12px;
-    padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
-    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 10px;
+    height: 46px; padding: 0 14px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
   }
+  header .mark { width: 22px; height: 22px; flex: none; -webkit-user-drag: none; }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }
   header .path { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   header .status { margin-left: auto; font-size: 12px; color: var(--muted); }
-  .layout { display: grid; grid-template-columns: minmax(250px, 310px) 1fr; height: calc(100vh - 46px); }
+  .layout { display: grid; grid-template-columns: minmax(250px, 310px) 1fr; height: calc(100% - 46px); }
   aside { border-right: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 12px; }
   main { overflow: auto; padding: 16px 20px 60px; }
 
@@ -87,8 +94,8 @@
 
   .actions {
     position: sticky; bottom: 0; display: flex; gap: 8px; align-items: center;
-    padding: 10px 0 0; margin-top: 4px; border-top: 1px solid var(--line);
-    background: linear-gradient(to bottom, transparent, var(--bg) 25%);
+    padding: 10px 0 12px; margin-top: 4px; border-top: 1px solid var(--line);
+    background: var(--bg);
   }
   .result { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; margin-top: 8px; }
   .result.ok { color: var(--ok); }
@@ -134,6 +141,14 @@
 </head>
 <body>
 <header>
+  <!-- The icon, inline, so the window chrome matches the packaged icon without
+       another request. Same shapes as packaging/icons/generate.py. -->
+  <svg class="mark" viewBox="0 0 100 100" aria-hidden="true">
+    <rect x="0" y="0" width="100" height="100" rx="22" fill="#1f2633"/>
+    <path d="M26 28 L50 50 L26 72" fill="none" stroke="#6aa9ff" stroke-width="10"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="60" y="64.5" width="20" height="10" rx="5" fill="#6aa9ff"/>
+  </svg>
   <h1>ssha</h1>
   <span class="path" id="cfgpath"></span>
   <span class="status" id="status"></span>
@@ -220,7 +235,7 @@
         <p class="hint" style="margin-top:0">skill 告诉 agent 怎么用 ssha，装到下面任一位置即可。</p>
         <div id="agent-targets"></div>
         <div class="row" style="margin-top:12px">
-          <button type="button" id="agent-download">下载 SKILL.md</button>
+          <button type="button" id="agent-copy">复制 SKILL.md</button>
           <span class="hint" id="agent-cli"></span>
         </div>
       </fieldset>
@@ -941,21 +956,16 @@ $("agent-mcp").addEventListener("click", (e) => {
   if (btn) copyToClipboard(btn.dataset.copy, btn);
 });
 
-$("agent-download").addEventListener("click", async () => {
+// A window has no "save as" for a download to trigger, so the skill is copied
+// instead: paste it wherever the other machine needs it. `ssha skill print`
+// writes it to a file when a file is what you want.
+$("agent-copy").addEventListener("click", async (e) => {
   try {
-    const res = await fetch("/api/skill/download", { headers: { "X-SSHA-Token": TOKEN } });
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const blob = await res.blob();
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "SKILL.md";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(a.href);
-    agentResult("已下载 SKILL.md", false);
+    const r = await api("/api/skill");
+    await copyToClipboard(r.content, e.target);
+    agentResult("SKILL.md 已复制到剪贴板", false);
   } catch (err) {
-    agentResult("下载失败：" + String(err.message || err), true);
+    agentResult("复制失败：" + String(err.message || err), true);
   }
 });
 
@@ -1025,6 +1035,14 @@ $("new").addEventListener("click", () => {
   $("scan-out").textContent = "";
   $("result").textContent = "";
   $("f-name").focus();
+});
+
+// Ctrl+S saves, the way a desktop app is expected to.
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+    e.preventDefault();
+    if (!$("form").hidden) $("form").requestSubmit();
+  }
 });
 
 if (!TOKEN) {

@@ -25,6 +25,7 @@ import (
 	"ssha/internal/audit"
 	"ssha/internal/broker"
 	"ssha/internal/config"
+	"ssha/internal/desktop"
 	"ssha/internal/mcpsrv"
 	"ssha/internal/sshconfig"
 	"ssha/internal/sshx"
@@ -1260,9 +1261,9 @@ func (a *App) cmdMCP(args []string) int {
 
 func (a *App) cmdUI(args []string) int {
 	fs := a.newFlagSet("ui")
-	addr := fs.String("addr", "127.0.0.1:8770", "listen address; loopback only")
-	open := fs.Bool("open", false, "open the editor in your browser")
-	tokenFile := fs.String("token-file", "", "keep the access token in this file so a bookmarked URL survives a restart")
+	headless := fs.Bool("headless", false, "不打开窗口，改成一个本地 HTTP 服务并打印地址（给服务器、CI、SSH 转发用）")
+	addr := fs.String("addr", "127.0.0.1:8770", "headless 模式的监听地址，只能是回环地址")
+	tokenFile := fs.String("token-file", "", "headless 模式下把访问 token 存在这个文件里")
 	if code, ok := a.parse(fs, args); !ok {
 		return code
 	}
@@ -1285,14 +1286,26 @@ func (a *App) cmdUI(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	err := ui.Run(ctx, ui.Options{
-		ConfigPath: path,
-		Addr:       *addr,
-		Version:    a.Version,
-		Open:       *open,
-		TokenFile:  *tokenFile,
-	})
-	if err != nil && !errors.Is(err, context.Canceled) {
+	if *headless {
+		err := ui.Run(ctx, ui.Options{
+			ConfigPath: path,
+			Addr:       *addr,
+			Version:    a.Version,
+			TokenFile:  *tokenFile,
+		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			return a.fail(err)
+		}
+		return ExitOK
+	}
+
+	srv, err := ui.New(path, a.Version, *tokenFile)
+	if err != nil {
+		return a.fail(err)
+	}
+	defer srv.Close()
+
+	if err := desktop.Run(ctx, srv, a.Version); err != nil && !errors.Is(err, context.Canceled) {
 		return a.fail(err)
 	}
 	return ExitOK

@@ -1,0 +1,34 @@
+# Resource script for the Windows build. windres compiles this into
+# rsrc_windows_amd64.syso in the package directory, and the Go linker picks the
+# .syso up automatically, which is how the exe gets an icon in Explorer and a
+# properties tab instead of "unknown application".
+
+#include <winver.h>
+
+1 ICON "../icons/ssha.ico"
+
+1 VERSIONINFO
+FILEVERSION     0,1,0,0
+PRODUCTVERSION  0,1,0,0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName",      "ssha contributors\0"
+      VALUE "FileDescription",  "ssha - SSH broker for AI agents\0"
+      VALUE "FileVersion",      "0.1.0.0\0"
+      VALUE "InternalName",     "ssha\0"
+      VALUE "LegalCopyright",   "MIT License\0"
+      VALUE "OriginalFilename", "ssha.exe\0"
+      VALUE "ProductName",      "ssha\0"
+      VALUE "ProductVersion",   "0.1.0.0\0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

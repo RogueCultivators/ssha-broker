@@ -1,0 +1,175 @@
+name: desktop
+
+# The desktop packages are built per platform because the window is the system
+# webview: WebKitGTK on Linux needs GTK headers, macOS links WebKit.framework,
+# and Windows needs a C++ toolchain for the WebView2 backend. None of that
+# cross-compiles from one runner.
+#
+# The plain `ci` workflow is what gates correctness; this one gates the packages.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: v
+        run: |
+          echo "version=$(git describe --tags --always | sed 's/^v//')" >> "$GITHUB_OUTPUT"
+          case "$GITHUB_REF" in refs/tags/v*) echo "release=true" >> "$GITHUB_OUTPUT" ;; esac
+
+  linux:
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25"
+          cache: true
+      - name: dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
+      - name: build the desktop binary
+        run: ./scripts/build-desktop.sh dist/ssha
+      - name: check that the binary asks for a window, not a browser
+        run: |
+          ./dist/ssha ui --help 2>&1 | grep -q -- --headless || {
+            echo "the desktop binary should document --headless"; exit 1; }
+          # With no display it must explain itself instead of aborting inside GTK.
+          env -u DISPLAY -u WAYLAND_DISPLAY ./dist/ssha ui 2>&1 | tee /tmp/nodisplay.txt
+          grep -q "没有图形环境" /tmp/nodisplay.txt
+      - name: .deb
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.0
+          ARCH=amd64 VERSION='${{ needs.version.outputs.version }}' BINARY=dist/ssha \
+            "$(go env GOPATH)/bin/nfpm" package -f packaging/nfpm.yaml -p deb -t dist/
+      - name: AppImage
+        run: |
+          curl -sSLo /tmp/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool
+          sudo mv /tmp/appimagetool /usr/local/bin/appimagetool
+          # appimagetool is itself an AppImage and the runner has no FUSE.
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          ./packaging/appimage/build.sh dist/ssha '${{ needs.version.outputs.version }}' \
+            "dist/ssha-${{ needs.version.outputs.version }}-x86_64.AppImage"
+      - name: verify the .deb
+        run: |
+          deb=$(ls dist/*.deb | head -1)
+          dpkg-deb -c "$deb" | grep -q 'usr/bin/ssha'
+          dpkg-deb -c "$deb" | grep -q 'applications/ssha.desktop'
+          dpkg-deb -c "$deb" | grep -q 'hicolor/512x512/apps/ssha.png'
+          dpkg-deb -f "$deb" Depends
+      - uses: actions/upload-artifact@v6
+        with:
+          name: linux-packages
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25"
+          cache: true
+      - name: toolchain
+        run: |
+          # MSYS2 ships with the runner image and has the mingw-w64 C++ toolchain
+          # the WebView2 backend needs.
+          echo "C:\msys64\mingw64\bin" >> $env:GITHUB_PATH
+          & "C:\msys64\mingw64\bin\g++.exe" --version | Select-Object -First 1
+      - name: icon and version resource
+        run: |
+          & "C:\msys64\mingw64\bin\windres.exe" -i packaging/windows/ssha.rc -o cmd/ssha/rsrc_windows_amd64.syso
+      - name: build
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          go build -tags desktop -trimpath `
+            -ldflags "-s -w -X main.version=${{ needs.version.outputs.version }}" `
+            -o dist/ssha.exe ./cmd/ssha
+      - name: WebView2 loader
+        run: |
+          # webview's Windows backend resolves WebView2Loader.dll at runtime, so it
+          # travels next to the exe. The WebView2 *runtime* itself is part of
+          # Windows 10 and later.
+          curl.exe -sSLo webview2.zip https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2
+          Expand-Archive -Path webview2.zip -DestinationPath webview2 -Force
+          Copy-Item webview2/build/native/x64/WebView2Loader.dll dist/
+      - name: package
+        run: |
+          $v = '${{ needs.version.outputs.version }}'
+          Compress-Archive -Path dist/ssha.exe, dist/WebView2Loader.dll `
+            -DestinationPath "dist/ssha-$v-windows-x64.zip"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: windows-package
+          path: dist/*-windows-x64.zip
+
+  macos:
+    needs: version
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25"
+          cache: true
+      - name: build the desktop binary
+        run: ./scripts/build-desktop.sh dist/ssha
+      - name: bundle
+        run: ./packaging/macos/bundle.sh dist/ssha '${{ needs.version.outputs.version }}' dist/ssha.app
+      - name: ad-hoc sign
+        run: |
+          # No developer certificate here, but an ad-hoc signature is what makes
+          # the bundle launchable on a machine that downloads it.
+          codesign --force --deep --sign - dist/ssha.app
+          codesign --verify --verbose dist/ssha.app
+      - name: package
+        run: |
+          v='${{ needs.version.outputs.version }}'
+          ditto -c -k --sequesterRsrc --keepParent dist/ssha.app "dist/ssha-$v-macos.zip"
+          hdiutil create -volname ssha -srcfolder dist/ssha.app -ov -format UDZO \
+            "dist/ssha-$v.dmg" || echo "dmg creation failed; the zip is still there"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: macos-package
+          path: |
+            dist/*-macos.zip
+            dist/*.dmg
+
+  release:
+    needs: [version, linux, windows, macos]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+      - name: attach the packages to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --generate-notes
+          find artifacts -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.zip' -o -name '*.dmg' \) \
+            -exec gh release upload "$tag" {} --clobber \;

@@ -1,0 +1,63 @@
+# nfpm builds the .deb:  nfpm package -f packaging/nfpm.yaml -p deb -t dist/
+#
+# ARCH, VERSION and BINARY come from the environment so the same file works in CI
+# and locally:
+#   ARCH=amd64 VERSION=1.2.3 BINARY=dist/ssha nfpm pkg -f packaging/nfpm.yaml -p deb -t dist/
+name: ssha
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: admin
+priority: optional
+vendor: ssha
+homepage: https://github.com/RogueCultivators/ssha-broker
+license: MIT
+maintainer: ssha contributors
+description: |
+  An SSH broker for AI agents.
+  .
+  It holds the credentials, enforces a per-host policy and records a
+  tamper-evident audit log; agents talk to it over MCP or the CLI and never see
+  a private key. This package installs the desktop editor, the CLI and the MCP
+  server.
+depends:
+  # The window is the system webview. Both sonames exist because the C library
+  # loads either one at runtime; Ubuntu 24.04 and newer only ship 4.1.
+  - libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37
+  - libgtk-3-0
+contents:
+  - src: ${BINARY}
+    dst: /usr/bin/ssha
+    file_info:
+      mode: 0755
+  - src: packaging/linux/ssha.desktop
+    dst: /usr/share/applications/ssha.desktop
+    file_info:
+      mode: 0644
+  - src: packaging/icons/ssha-16.png
+    dst: /usr/share/icons/hicolor/16x16/apps/ssha.png
+  - src: packaging/icons/ssha-24.png
+    dst: /usr/share/icons/hicolor/24x24/apps/ssha.png
+  - src: packaging/icons/ssha-32.png
+    dst: /usr/share/icons/hicolor/32x32/apps/ssha.png
+  - src: packaging/icons/ssha-48.png
+    dst: /usr/share/icons/hicolor/48x48/apps/ssha.png
+  - src: packaging/icons/ssha-64.png
+    dst: /usr/share/icons/hicolor/64x64/apps/ssha.png
+  - src: packaging/icons/ssha-128.png
+    dst: /usr/share/icons/hicolor/128x128/apps/ssha.png
+  - src: packaging/icons/ssha-256.png
+    dst: /usr/share/icons/hicolor/256x256/apps/ssha.png
+  - src: packaging/icons/ssha-512.png
+    dst: /usr/share/icons/hicolor/512x512/apps/ssha.png
+  - src: packaging/icons/ssha-1024.png
+    dst: /usr/share/icons/hicolor/1024x1024/apps/ssha.png
+  # The agent skill ships with the package so `ssha skill install` works without
+  # the source tree around.
+  - src: skills/ssha-agent/SKILL.md
+    dst: /usr/share/ssha/skills/ssha-agent/SKILL.md
+    file_info:
+      mode: 0644
+scripts:
+  postinstall: packaging/nfpm/postinstall.sh
+  preremove: packaging/nfpm/preremove.sh

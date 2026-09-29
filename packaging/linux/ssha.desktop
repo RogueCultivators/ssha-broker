@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=ssha
+Name[zh_CN]=ssha 配置
+GenericName=SSH host editor
+GenericName[zh_CN]=SSH 主机配置
+Comment=Manage the SSH hosts an AI agent may use, with policy and auditing
+Comment[zh_CN]=管理 AI agent 可以使用的 SSH 主机，带策略和审计
+Exec=ssha ui
+TryExec=ssha
+Icon=ssha
+Terminal=false
+Categories=Development;System;Security;Network;
+Keywords=ssh;agent;mcp;audit;secret;
+StartupNotify=true
+StartupWMClass=ssha
