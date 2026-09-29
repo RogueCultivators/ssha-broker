@@ -1,6 +1,6 @@
 [Unit]
 Description=ssha MCP server for agents (streamable HTTP)
-Documentation=https://github.com/yourorg/ssha
+Documentation=https://github.com/RogueCultivators/ssha-broker
 After=network.target
 
 [Service]

@@ -20,7 +20,7 @@ ssha 是单个静态二进制，部署就是「放一个文件 + 装一个 syste
 ## 一、最快路径
 
 ```bash
-git clone <repo> && cd ssh-agent
+git clone https://github.com/RogueCultivators/ssha-broker && cd ssha-broker
 ./packaging/install.sh --user        # 或者： sudo ./packaging/install.sh --system
 ```
 

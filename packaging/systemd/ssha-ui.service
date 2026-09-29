@@ -1,6 +1,6 @@
 [Unit]
 Description=ssha config editor (local web UI)
-Documentation=https://github.com/yourorg/ssha
+Documentation=https://github.com/RogueCultivators/ssha-broker
 After=network.target
 
 [Service]

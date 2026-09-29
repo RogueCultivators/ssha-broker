@@ -57,7 +57,7 @@ codex / pi / claude / cursor ─────┐         │                    �
 ## 2. 安装
 
 ```bash
-git clone <this repo> && cd ssh-agent
+git clone https://github.com/RogueCultivators/ssha-broker && cd ssha-broker
 go build -o ssha ./cmd/ssha
 install -m 0755 ssha ~/.local/bin/ssha      # 或者 go install ./cmd/ssha
 
