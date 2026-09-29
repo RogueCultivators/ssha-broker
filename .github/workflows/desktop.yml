@@ -193,6 +193,9 @@ jobs:
       - name: attach the packages to the release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job downloads artifacts and never checks the repository out, so
+          # there is no .git for gh to read the repository name from.
+          GH_REPO: ${{ github.repository }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
           gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --generate-notes
