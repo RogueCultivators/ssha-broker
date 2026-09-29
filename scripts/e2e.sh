@@ -561,6 +561,8 @@ out=$("$BIN" -c "$WORK/ui.yaml" ui --addr 127.0.0.1:$UI_PORT 2>&1); code=$?
 check "a taken port is reported instead of printing a wrong url" 1 "$code"
 contains "the bind failure is explicit" "无法监听" "$out"
 grep -q "备注" <<<"$(cat "$WORK/page.html")" && pass "the page is the editor (and speaks Chinese)" || fail "the page looks wrong"
+contains "the status badges are Chinese, not allow/readonly/deny" 'allow: "允许"' "$(cat "$WORK/page.html")"
+contains "the auth labels are Chinese too" 'password: "密码"' "$(cat "$WORK/page.html")"
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$UI_PORT/api/state")
 [ "$code" = "401" ] && pass "the api refuses a request without the token" || fail "the api returned $code without a token"
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-SSHA-Token: wrong" "http://127.0.0.1:$UI_PORT/api/state")

@@ -140,7 +140,7 @@
       <button id="new" title="新建主机">＋</button>
     </div>
     <div class="row" style="margin-bottom:10px">
-      <button id="import-open" style="flex:1">从 ~/.ssh/config 导入</button>
+      <button id="import-open" style="flex:1">导入 ~/.ssh/config</button>
     </div>
     <ul class="hostlist" id="list"></ul>
     <details id="auditbox">
@@ -161,11 +161,8 @@
       <div class="gate-card">
         <h2 id="gate-title">这个界面需要命令行里那个 token</h2>
         <ul>
-          <li>运行 <code>ssha ui</code>（加 <code>--open</code> 会自动打开浏览器），
-              用它在终端里打印的那条地址，形如 <code>http://127.0.0.1:8770/?token=…</code>。</li>
-          <li>token 每次启动都会重新生成，只放在地址里。所以收藏夹、直接把地址改成
-              <code>http://127.0.0.1:8770/</code>、或者换个标签页打开，都不行。</li>
-          <li>找不到了？把 <code>ssha ui</code> 停掉重新起一次就好。</li>
+          <li>用 <code>ssha ui</code> 在终端里打印的那条地址打开，形如 <code>http://127.0.0.1:8770/?token=…</code>。</li>
+          <li>token 每次启动都会变，只放在地址里；丢了就重新起一次 <code>ssha ui</code>。</li>
         </ul>
       </div>
     </div>
@@ -173,11 +170,7 @@
     <div id="import" hidden>
       <fieldset>
         <legend>从 ssh config 导入</legend>
-        <p class="hint" style="margin-top:0">
-          别名、地址、用户、端口、私钥、跳板机会一起带过来。ssha 表达不了的东西
-          （Match 块、ProxyCommand、<code>Host</code> 模式）会列在下面，不会静默丢掉。
-          导入不会放权：策略由你选的模式决定。
-        </p>
+        <p class="hint" style="margin-top:0">表达不了的东西（Match 块、ProxyCommand、<code>Host</code> 模式）会列在下面。</p>
         <div class="grid">
           <div>
             <label for="i-file">ssh config 文件</label>
@@ -186,9 +179,9 @@
           <div>
             <label for="i-mode">导入主机的策略</label>
             <select id="i-mode">
-              <option value="deny">deny — agent 看得到但什么都不能跑（最安全）</option>
-              <option value="readonly">readonly — 附一份保守的只读白名单</option>
-              <option value="allow">allow — 只靠拒绝列表兜底</option>
+              <option value="deny">禁止（最安全）</option>
+              <option value="readonly">只读</option>
+              <option value="allow">允许</option>
             </select>
           </div>
         </div>
@@ -217,7 +210,7 @@
         <legend>主机</legend>
         <div class="grid">
           <div>
-            <label for="f-name">名称<span class="hint" style="display:inline"> — agent 只知道这个名字</span></label>
+            <label for="f-name">名称</label>
             <input id="f-name" required placeholder="prod-web">
           </div>
           <div>
@@ -236,11 +229,8 @@
         <div style="margin-top:12px">
           <label for="f-description">备注</label>
           <textarea id="f-description" rows="4"
-            placeholder="这台机器上跑什么，出问题先看哪里，谁负责。例如：&#10;公网 Web 前端，nginx 反代。后面是 checkout-api，systemd 单元 checkout-api.service，端口 8080，日志 /var/log/checkout/api.log，重启会先 drain 在途请求。"></textarea>
-          <p class="hint">
-            agent 就是靠这段文字找机器的，所以用你自己的话写清楚跑什么、单元名、日志路径。
-            不需要按格式填，也没有别的字段要维护。
-          </p>
+            placeholder="公网 Web 前端，nginx 反代。后面是 checkout-api，systemd 单元 checkout-api.service，端口 8080，日志 /var/log/checkout/api.log。"></textarea>
+          <p class="hint">agent 靠这段文字找机器。写清跑什么、单元名、日志路径。</p>
         </div>
       </fieldset>
 
@@ -279,10 +269,7 @@
           <p class="hint" id="password-state"></p>
         </div>
 
-        <p class="hint">
-          直接在这里输就行，保存时 ssha 会写成一个 0600 的文件（见 <code id="secrets-dir">secrets/</code>）。
-          密码不会进配置文件、不会进审计日志、也不会出现在任何接口的返回里。
-        </p>
+        <p class="hint">保存在 <code id="secrets-dir">secrets/</code> 下（0600），不进配置文件。</p>
 
         <details class="adv" style="margin-top:8px">
           <summary>高级：自己指定文件或环境变量</summary>
@@ -308,11 +295,7 @@
               <input id="f-password_env" placeholder="SSHA_PROD_PASSWORD">
             </div>
           </div>
-          <p class="hint">
-            环境变量的优先级高于文件：如果这里填了环境变量，上面输入的密码会被它盖掉。
-            所以在上面输密码时，ssha 会把这台主机的环境变量来源清掉，并告诉你它清了什么。
-            两个来源都没有的话：命令行会交互式提问，MCP 会直接报错（不会卡住）。
-          </p>
+          <p class="hint">环境变量优先于文件。上面输密码时会自动清掉它，并在结果里说明。</p>
         </details>
       </fieldset>
 
@@ -333,16 +316,12 @@
           </div>
           <div class="row" style="margin-top:8px">
             <button type="button" id="scan">扫描主机密钥</button>
-            <span class="hint">抓取服务器的公钥并显示指纹，一键填进上面的框</span>
           </div>
           <div class="result" id="scan-out"></div>
           <div class="check" style="margin-top:8px">
             <input type="checkbox" id="f-insecure"><label for="f-insecure">不校验主机密钥（仅测试用）</label>
           </div>
-          <p class="hint">
-            默认是空白就沿用 <code>~/.ssh/known_hosts</code>；两边都没有就会拒绝连接——
-            这是 fail-closed，比悄悄连上去安全。
-          </p>
+          <p class="hint">留空则用 <code>~/.ssh/known_hosts</code>；查不到就拒绝连接。</p>
         </fieldset>
 
         <fieldset>
@@ -355,9 +334,9 @@
               <div>
                 <label for="f-mode">模式</label>
                 <select id="f-mode">
-                  <option value="allow">allow — 除拒绝列表外都允许</option>
-                  <option value="readonly">readonly — 只允许白名单，并拒绝 shell 元字符</option>
-                  <option value="deny">deny — 什么都不允许</option>
+                  <option value="allow">允许（allow）</option>
+                  <option value="readonly">只读（readonly）</option>
+                  <option value="deny">禁止（deny）</option>
                 </select>
               </div>
               <div>
@@ -371,9 +350,9 @@
               <div>
                 <label for="f-disclosure">给 agent 看多少身份</label>
                 <select id="f-disclosure">
-                  <option value="full">full — 地址、端口、用户名都给</option>
-                  <option value="alias">alias — 只给名称和备注</option>
-                  <option value="blind">blind — 只给名称和限制</option>
+                  <option value="full">完整（full）</option>
+                  <option value="alias">只给别名（alias）</option>
+                  <option value="blind">最少（blind）</option>
                 </select>
               </div>
             </div>
@@ -396,9 +375,9 @@
               </div>
             </div>
             <div class="grid" style="margin-top:10px">
-              <div class="check"><input type="checkbox" id="f-redact_output"><label for="f-redact_output">遮蔽输出里的地址和用户名（换成 &lt;host&gt;/&lt;user&gt;）</label></div>
-              <div class="check"><input type="checkbox" id="f-allow_meta"><label for="f-allow_meta">readonly 下允许 shell 元字符（管道/分号）</label></div>
-              <div class="check"><input type="checkbox" id="f-no_baseline"><label for="f-no_baseline">关闭内置的危险命令拦截列表</label></div>
+              <div class="check"><input type="checkbox" id="f-redact_output"><label for="f-redact_output">输出里的地址和用户名换成 &lt;host&gt;/&lt;user&gt;</label></div>
+              <div class="check"><input type="checkbox" id="f-allow_meta"><label for="f-allow_meta">只读模式下允许管道和分号</label></div>
+              <div class="check"><input type="checkbox" id="f-no_baseline"><label for="f-no_baseline">关闭内置危险命令拦截</label></div>
             </div>
           </div>
           <p class="hint" id="effective"></p>
@@ -462,6 +441,13 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const oneLine = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 const lines = (s) => s.split("\n").map((x) => x.trim()).filter(Boolean);
 const commas = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
+// modeLabel and authLabel keep the interface Chinese; the config keeps the
+// keywords (allow/readonly/deny, key/agent/password) they map to.
+const MODES = { allow: "允许", readonly: "只读", deny: "禁止" };
+const AUTHS = { key: "私钥", agent: "ssh-agent", password: "密码" };
+const modeLabel = (m) => MODES[m] || m;
+const authLabel = (a) => AUTHS[a] || a;
+
 const setStatus = (msg, bad) => { const el = $("status"); el.textContent = msg; el.style.color = bad ? "var(--bad)" : ""; };
 
 function gate(title) {
@@ -492,7 +478,7 @@ function renderList() {
     const warn = (h.warnings || []).length ? ' <span class="badge" style="color:var(--warn);border-color:var(--warn)">!</span>' : "";
     const note = oneLine(h.description) || [h.user, h.addr].filter(Boolean).join("@");
     return `<li class="${h.name === selected ? "sel" : ""}" data-name="${esc(h.name)}">
-      <div class="name">${esc(h.name)} <span class="badge ${esc(mode)}">${esc(mode)}</span>${hidden ? ' <span class="badge hidden">隐藏身份</span>' : ""}${warn}</div>
+      <div class="name">${esc(h.name)} <span class="badge ${esc(mode)}">${esc(modeLabel(mode))}</span>${hidden ? ' <span class="badge hidden">隐藏身份</span>' : ""}${warn}</div>
       <div class="note">${esc(note)}</div>
     </li>`;
   }).join("") || `<li class="empty">没有匹配的主机</li>`;
@@ -594,8 +580,7 @@ function syncPolicyFields() {
   const h = hosts.find((x) => x.name === selected);
   const eff = h?.effective_policy;
   if (eff) {
-    $("effective").textContent = `当前生效：模式 ${eff.mode}，超时 ${eff.timeout}，`
-      + `身份可见度 ${eff.disclosure || "full"}`
+    $("effective").textContent = `当前生效：${modeLabel(eff.mode)}，超时 ${eff.timeout}`
       + (eff.allow_commands?.length ? `，允许 ${eff.allow_commands.length} 条规则` : "")
       + (eff.deny_commands?.length ? `，拒绝 ${eff.deny_commands.length} 条规则` : "");
   }
@@ -774,7 +759,7 @@ async function loadCandidates() {
           <input type="checkbox" class="i-pick" value="${esc(c.alias)}" checked>
           <span>
             <span style="font-family:var(--mono)">${esc(c.alias)}</span>
-            <span class="hint"> → ${esc(c.addr)}${c.user ? " 用户 " + esc(c.user) : ""}${c.port && c.port !== 22 ? ":" + c.port : ""} · 认证 ${esc(c.auth)}${c.proxy_jump ? " · 经 " + esc(c.proxy_jump) : ""}</span>
+            <span class="hint"> → ${esc(c.addr)}${c.user ? " 用户 " + esc(c.user) : ""}${c.port && c.port !== 22 ? ":" + c.port : ""} · ${esc(authLabel(c.auth))}${c.proxy_jump ? " · 经 " + esc(c.proxy_jump) : ""}</span>
             ${c.exists ? ' <span class="badge">已存在</span>' : ""}
             ${(c.warnings || []).map((w) => `<div class="hint" style="color:var(--warn)">${esc(w)}</div>`).join("")}
           </span>
