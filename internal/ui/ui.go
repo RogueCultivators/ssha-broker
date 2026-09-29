@@ -94,16 +94,28 @@ func Run(ctx context.Context, opts Options) error {
 	mux.Handle("/api/sshconfig", s.auth(http.HandlerFunc(s.handleSSHConfig)))
 	mux.Handle("/api/sshconfig/import", s.auth(http.HandlerFunc(s.handleSSHConfigImport)))
 
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	// Bind before announcing anything: printing a URL for a port we failed to
+	// take would send the operator to whatever else is listening there.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("cannot listen on %s: %w", addr, err)
+	}
+
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	errCh := make(chan error, 1)
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
 
-	url := "http://" + addr + "/?token=" + token
-	fmt.Fprintf(os.Stderr, "ssha ui\n  config: %s\n  open:   %s\n\n", s.cfgPath, url)
+	url := "http://" + ln.Addr().String() + "/?token=" + token
+	fmt.Fprintf(os.Stderr,
+		"ssha ui\n"+
+			"  config: %s\n"+
+			"\n"+
+			"  Open this URL in a browser (the token is required and changes every run):\n"+
+			"    %s\n\n", s.cfgPath, url)
 	if opts.Open {
 		openBrowser(url)
 	}

@@ -146,6 +146,20 @@
     <div id="warnings"></div>
     <p class="empty" id="nothing">Select a host on the left, or create one.</p>
 
+    <div id="gate" hidden>
+      <div class="warnbox">
+        <strong id="gate-title">This editor needs the token from the command line.</strong>
+        <ul>
+          <li>Run <code>ssha ui</code> (add <code>--open</code> to launch the browser yourself) and
+              open the URL it prints to the terminal. It looks like
+              <code>http://127.0.0.1:8770/?token=…</code>.</li>
+          <li>The token is generated per run and kept only in the URL, so a bookmark, a reload of a
+              bare <code>http://127.0.0.1:8770/</code>, or another browser tab will not work.</li>
+          <li>Lost it? Stop <code>ssha ui</code> and start it again.</li>
+        </ul>
+      </div>
+    </div>
+
     <div id="import" hidden>
       <fieldset>
         <legend>Import from an ssh config</legend>
@@ -392,8 +406,22 @@ async function api(path, opts = {}) {
   const text = await res.text();
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch { body = { error: text }; }
+  if (res.status === 401) {
+    throw new Error("the token is missing or stale");
+  }
   if (!res.ok) throw new Error((body && body.error) || res.statusText);
   return body;
+}
+
+// gate explains how to get in, instead of leaving a cryptic 401 in the corner.
+function gate(title) {
+  $("gate").hidden = false;
+  $("nothing").hidden = true;
+  $("form").hidden = true;
+  $("import").hidden = true;
+  $("list").innerHTML = "";
+  $("status").textContent = "";
+  if (title) $("gate-title").textContent = title;
 }
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -838,7 +866,11 @@ $("new").addEventListener("click", () => {
   $("f-name").focus();
 });
 
-refresh().catch((err) => setStatus(String(err.message || err), true));
+if (!TOKEN) {
+  gate();
+} else {
+  refresh().catch((err) => gate(String(err.message || err)));
+}
 </script>
 </body>
 </html>

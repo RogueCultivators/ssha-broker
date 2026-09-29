@@ -13,6 +13,10 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${PORT:-2222}"
 IMAGE="ssha-e2e-sshd"
 CONTAINER="ssha-e2e"
+# Ports for the throwaway servers are derived from the pid. Fixed ports let a
+# process left over from an earlier run answer the requests instead, which
+# produces baffling failures.
+BASE_PORT=$(( 18000 + ($$ % 400) * 8 ))
 WORK="$(mktemp -d)"
 BIN="$WORK/ssha"
 FAILED=0
@@ -26,7 +30,9 @@ check() { # check <description> <expected-exit> <actual-exit>
 }
 
 contains() { # contains <description> <needle> <haystack>
-  if printf '%s' "$3" | grep -qF -- "$2"; then pass "$1"; else fail "$1: %q not found in output" "$2"; printf '%s\n' "$3" | head -20; fi
+  # A herestring, not a pipe: with `set -o pipefail`, `grep -q` exiting on the
+  # first match can kill the writer with SIGPIPE and mark the pipeline failed.
+  if grep -qF -- "$2" <<<"$3"; then pass "$1"; else fail "$1: %q not found in output" "$2"; head -20 <<<"$3"; fi
 }
 
 cleanup() {
@@ -178,7 +184,7 @@ export SSHA_CONFIG="$WORK/ssha.yaml"
 log "cli: hosts and policy"
 out=$("$BIN" hosts list); contains "hosts list shows both hosts" "testbox-rw" "$out"
 out=$("$BIN" hosts list --tag rw); contains "tag filter works" "testbox-rw" "$out"
-if printf '%s' "$out" | grep -q "  testbox  "; then fail "tag filter leaked testbox"; else pass "tag filter excludes testbox"; fi
+if grep -q "  testbox  " <<<"$out"; then fail "tag filter leaked testbox"; else pass "tag filter excludes testbox"; fi
 
 "$BIN" policy check testbox -- ls >/dev/null; check "policy allows ls on readonly host" 0 $?
 "$BIN" policy check testbox -- 'curl http://example.com' >/dev/null; check "policy denies curl on readonly host" 77 $?
@@ -208,7 +214,7 @@ contains "hosts show lists the log path" "logs=/var/log/payment/api.log" "$out"
 
 out=$("$BIN" multi --query payment -- whoami); check "multi --query selects by app" 0 $?
 contains "only the matching host ran" "testbox" "$out"
-if printf '%s' "$out" | grep -q "testbox-rw"; then fail "multi --query was too broad"; else pass "multi --query did not include other hosts"; fi
+if grep -q "testbox-rw" <<<"$out"; then fail "multi --query was too broad"; else pass "multi --query did not include other hosts"; fi
 
 # ---------------------------------------------------------------------------
 log "cli: app-scoped commands and audit"
@@ -219,7 +225,7 @@ contains "the command still ran" "root" "$out"
 out=$("$BIN" run testbox --app nosuchapp -- whoami 2>&1); code=$?
 check "run --app with an unknown app is refused" 1 "$code"
 contains "the refusal lists what the host actually runs" "payment-api" "$out"
-if printf '%s' "$out" | grep -q "root$"; then fail "the refused command ran anyway"; else pass "the refused command did not run"; fi
+if grep -q "root$" <<<"$out"; then fail "the refused command ran anyway"; else pass "the refused command did not run"; fi
 
 out=$("$BIN" run testbox --app payment-api --json -- whoami)
 contains "the app is echoed on the result" '"app": "payment-api"' "$out"
@@ -232,7 +238,7 @@ count=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])' <<<"$
 
 out=$("$BIN" multi --app nginx -- whoami); check "multi --app selects the hosts running it" 0 $?
 contains "multi --app reached testbox" "testbox" "$out"
-if printf '%s' "$out" | grep -q "testbox-rw"; then fail "multi --app was too broad"; else pass "multi --app excluded hosts without the app"; fi
+if grep -q "testbox-rw" <<<"$out"; then fail "multi --app was too broad"; else pass "multi --app excluded hosts without the app"; fi
 
 out=$("$BIN" multi --app nginx --json -- whoami)
 contains "multi records the app against each command" '"app": "nginx"' "$out"
@@ -405,7 +411,7 @@ out=$("$BIN" hosts show secret); check "hosts show on a hidden host" 0 $?
 contains "the hidden host keeps its description" "identity withheld" "$out"
 contains "the hidden host still shows its policy" "policy mode" "$out"
 contains "the hidden host says the address is withheld" "withheld by policy" "$out"
-if printf '%s' "$out" | grep -qE '127\.0\.0\.1|root@'; then fail "hosts show leaked the address or user"; else pass "hosts show reveals no address or user"; fi
+if grep -qE '127\.0\.0\.1|root@' <<<"$out"; then fail "hosts show leaked the address or user"; else pass "hosts show reveals no address or user"; fi
 
 # The operator can always look; that is what --reveal is for.
 out=$("$BIN" --reveal hosts show secret)
@@ -434,20 +440,20 @@ check "a command on a hidden host runs" 0 $?
 contains "the address is redacted" "addr=<host>" "$out"
 contains "the user name is redacted" "user=<user>" "$out"
 contains "a custom redact_pattern is replaced" "token=<redacted>" "$out"
-if printf '%s' "$out" | grep -qE '127\.0\.0\.1|SECRET-ABC123'; then fail "raw identity survived redaction"; else pass "no raw identity or secret survived"; fi
+if grep -qE '127\.0\.0\.1|SECRET-ABC123' <<<"$out"; then fail "raw identity survived redaction"; else pass "no raw identity or secret survived"; fi
 
 out=$("$BIN" run secret -- whoami)
 contains "whoami is redacted" "<user>" "$out"
 
 out=$("$BIN" run secret --json -- cat /tmp/leak.txt)
 check "a redacted json run succeeds" 0 $?
-if printf '%s' "$out" | grep -qE '127\.0\.0\.1|SECRET-ABC123'; then fail "the json result leaked"; else pass "the json result is redacted too"; fi
+if grep -qE '127\.0\.0\.1|SECRET-ABC123' <<<"$out"; then fail "the json result leaked"; else pass "the json result is redacted too"; fi
 
 # The self-test is an operator tool, but an agent can run it too.
 out=$("$BIN" hosts test secret --json)
 check "hosts test on a hidden host" 0 $?
 contains "hosts test still reports success" '"ok": true' "$out"
-if printf '%s' "$out" | grep -qE '127\.0\.0\.1|"addr"|"user"|"auth"|SHA256:'; then
+if grep -qE '127\.0\.0\.1|"addr"|"user"|"auth"|SHA256:' <<<"$out"; then
   fail "hosts test leaked identity or the host key"
 else
   pass "hosts test omits the identity fields and the host key"
@@ -469,11 +475,11 @@ hosts:
     policy: {mode: allow, disclosure: alias, redact_output: true, timeout: 1s}
 EOF
 out=$($BIN -c "$WORK/badhost.yaml" run unreachable -- uname -s 2>&1)
-if printf '%s' "$out" | grep -qE '127\.0\.0\.1|:1\b'; then fail "a connection error leaked the address"; else pass "connection errors are redacted too"; fi
+if grep -qE '127\.0\.0\.1|:1\b' <<<"$out"; then fail "a connection error leaked the address"; else pass "connection errors are redacted too"; fi
 
 # The same must hold on the self-test failure path, which is easy to forget.
 out=$($BIN -c "$WORK/badhost.yaml" hosts test unreachable --json 2>&1)
-if printf '%s' "$out" | grep -qE '127\.0\.0\.1|"addr"|"user"|"auth"'; then
+if grep -qE '127\.0\.0\.1|"addr"|"user"|"auth"' <<<"$out"; then
   fail "a failed self-test leaked identity"
 else
   pass "a failed self-test is clean too"
@@ -485,14 +491,14 @@ if grep -q "SECRET-ABC123" "$WORK/audit.jsonl"; then pass "the audit log keeps t
 
 # ...but the agent's read of that log is scrubbed as well.
 out=$("$BIN" audit ls --host secret --json)
-if printf '%s' "$out" | grep -q "SECRET-ABC123"; then fail "the agent-facing audit leaked the pattern"; else pass "the agent-facing audit is redacted"; fi
+if grep -q "SECRET-ABC123" <<<"$out"; then fail "the agent-facing audit leaked the pattern"; else pass "the agent-facing audit is redacted"; fi
 out=$("$BIN" --reveal audit ls --host secret --json)
 contains "--reveal restores the raw audit" "SECRET-ABC123" "$out"
 
 # A denial reason must not leak either.
 out=$("$BIN" run secret -- mkfs.ext4 /dev/sda 2>&1); code=$?
 check "a denied command on a hidden host" 77 "$code"
-if printf '%s' "$out" | grep -qE '127\.0\.0\.1|root@'; then fail "the denial leaked identity"; else pass "the denial is clean"; fi
+if grep -qE '127\.0\.0\.1|root@' <<<"$out"; then fail "the denial leaked identity"; else pass "the denial is clean"; fi
 
 # MCP is the surface an agent actually uses, so prove it holds the line.
 if out=$(python3 "$REPO/scripts/mcp_privacy.py" "$WORK/ssha.yaml" "$BIN" 127.0.0.1 2>&1); then
@@ -572,7 +578,7 @@ contains "a second import skips what is already there" "skipped" "$out"
 # ---------------------------------------------------------------------------
 log "ui (config editor)"
 
-UI_PORT=8794
+UI_PORT=$(( BASE_PORT + 0 ))
 # Start from the commented template so the edit has real comments to preserve.
 "$BIN" init --out "$WORK/ui.yaml" --force >/dev/null
 "$BIN" -c "$WORK/ui.yaml" ui --addr 127.0.0.1:$UI_PORT >"$WORK/ui.log" 2>&1 &
@@ -581,9 +587,18 @@ for _ in $(seq 1 40); do grep -q 'token=' "$WORK/ui.log" && break; sleep 0.25; d
 TOKEN=$(grep -o 'token=[a-f0-9]*' "$WORK/ui.log" | head -1 | cut -d= -f2)
 [ -n "$TOKEN" ] && pass "the editor prints a tokenised url" || fail "no token in: $(cat "$WORK/ui.log")"
 
+contains "the startup output says which url to open" "Open this URL in a browser" "$(cat "$WORK/ui.log")"
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$UI_PORT/")
 [ "$code" = "200" ] && pass "the editor page is served" || fail "index returned $code"
-curl -s "http://127.0.0.1:$UI_PORT/" | grep -q "systemd unit" && pass "the page embeds the application editor" || fail "the page looks wrong"
+curl -s "http://127.0.0.1:$UI_PORT/" > "$WORK/page.html"
+contains "the page explains the token to a visitor who lacks one" "needs the token from the command line" "$(cat "$WORK/page.html")"
+
+# A port we cannot take must fail loudly. Printing a URL for a port somebody
+# else owns would send the operator to the wrong server.
+out=$("$BIN" -c "$WORK/ui.yaml" ui --addr 127.0.0.1:$UI_PORT 2>&1); code=$?
+check "a taken port is reported instead of printing a wrong url" 1 "$code"
+contains "the bind failure is explicit" "cannot listen on" "$out"
+grep -q "systemd unit" <<<"$(cat "$WORK/page.html")" && pass "the page embeds the application editor" || fail "the page looks wrong"
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$UI_PORT/api/state")
 [ "$code" = "401" ] && pass "the api refuses a request without the token" || fail "the api returned $code without a token"
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-SSHA-Token: wrong" "http://127.0.0.1:$UI_PORT/api/state")
@@ -634,25 +649,25 @@ if grep -q "name: ui-made" "$WORK/ui.yaml"; then fail "delete did not remove the
 kill $UI_PID 2>/dev/null
 wait $UI_PID 2>/dev/null
 
-out=$("$BIN" -c "$WORK/ui.yaml" ui --addr 0.0.0.0:8793 2>&1); code=$?
+out=$("$BIN" -c "$WORK/ui.yaml" ui --addr 0.0.0.0:$(( BASE_PORT + 1 )) 2>&1); code=$?
 check "the editor refuses a non-loopback address" 1 "$code"
 contains "the refusal explains itself" "rewrite the ssha config" "$out"
 
 # ---------------------------------------------------------------------------
 log "mcp over http"
-"$BIN" mcp --http 127.0.0.1:8799 >/dev/null 2>&1 &
+"$BIN" mcp --http 127.0.0.1:$(( BASE_PORT + 2 )) >/dev/null 2>&1 &
 MCP_PID=$!
 sleep 1
-code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8799/healthz)
+code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$(( BASE_PORT + 2 ))/healthz)
 [ "$code" = "200" ] && pass "healthz responds" || fail "healthz returned $code"
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8799/mcp \
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:$(( BASE_PORT + 2 ))/mcp \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}')
 [ "$code" = "200" ] && pass "anonymous loopback MCP initializes" || fail "initialize returned $code"
 kill "$MCP_PID" 2>/dev/null
 
 # non-loopback without tokens must refuse to start
-out=$("$BIN" mcp --http 0.0.0.0:8798 2>&1); code=$?
+out=$("$BIN" mcp --http 0.0.0.0:$(( BASE_PORT + 3 )) 2>&1); code=$?
 check "http without tokens refuses non-loopback" 1 "$code"
 contains "refusal explains why" "without tokens" "$out"
 
