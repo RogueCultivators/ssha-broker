@@ -347,6 +347,44 @@ Runs nginx and the checkout API; restart drains in-flight requests first.`,
 		})
 	}
 }
+
+// A relative secret path has to mean "next to the config", or the same config
+// behaves differently depending on where ssha is started from.
+func TestRelativeSecretPathsAreAnchoredToTheConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ssha.yaml")
+	body := `hosts:
+  - name: web
+    auth: {type: password, password_file: secrets/web.pass}
+  - name: keyed
+    auth: {type: key, key_path: secrets/id_ed25519, passphrase_file: ./pass}
+  - name: absolute
+    auth: {type: password, password_file: /tmp/absolute.pass}
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	web, _ := cfg.Host("web")
+	if want := filepath.Join(dir, "secrets", "web.pass"); web.Auth.PasswordFile != want {
+		t.Errorf("PasswordFile = %q, want %q", web.Auth.PasswordFile, want)
+	}
+	keyed, _ := cfg.Host("keyed")
+	if want := filepath.Join(dir, "secrets", "id_ed25519"); keyed.Auth.KeyPath != want {
+		t.Errorf("KeyPath = %q, want %q", keyed.Auth.KeyPath, want)
+	}
+	if want := filepath.Join(dir, "pass"); keyed.Auth.PassphraseFile != want {
+		t.Errorf("PassphraseFile = %q, want %q", keyed.Auth.PassphraseFile, want)
+	}
+	absolute, _ := cfg.Host("absolute")
+	if absolute.Auth.PasswordFile != "/tmp/absolute.pass" {
+		t.Errorf("an absolute path was rewritten: %q", absolute.Auth.PasswordFile)
+	}
+}
+
 func TestRemovedAppsFieldExplainsItself(t *testing.T) {
 	body := "hosts:\n  - name: web\n    auth: {type: key, key_path: /tmp/k}\n    apps: [{name: nginx}]\n"
 	_, err := Load(writeConfig(t, body))

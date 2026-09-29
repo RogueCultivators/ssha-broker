@@ -93,6 +93,7 @@ func Run(ctx context.Context, opts Options) error {
 	mux.Handle("/api/state", s.auth(http.HandlerFunc(s.handleState)))
 	mux.Handle("/api/hosts", s.auth(http.HandlerFunc(s.handleHosts)))
 	mux.Handle("/api/hosts/", s.auth(http.HandlerFunc(s.handleHost)))
+	mux.Handle("/api/secret", s.auth(http.HandlerFunc(s.handleSecret)))
 	mux.Handle("/api/test", s.auth(http.HandlerFunc(s.handleTest)))
 	mux.Handle("/api/hostkey", s.auth(http.HandlerFunc(s.handleHostKey)))
 	mux.Handle("/api/audit", s.auth(http.HandlerFunc(s.handleAudit)))
@@ -280,11 +281,16 @@ type hostView struct {
 	Effective     config.Spec `json:"effective_policy"`
 	Warnings      []string    `json:"warnings,omitempty"`
 	EffectiveMode string      `json:"effective_mode"`
+	// Whether the configured secret file exists and is non-empty. The secret
+	// itself is never part of any response.
+	PasswordReady   bool `json:"password_ready"`
+	PassphraseReady bool `json:"passphrase_ready"`
 }
 
 type statePayload struct {
 	ConfigPath string      `json:"config_path"`
 	AuditPath  string      `json:"audit_path"`
+	SecretsDir string      `json:"secrets_dir"`
 	Version    string      `json:"version"`
 	Global     config.Spec `json:"global_policy"`
 	Defaults   config.Spec `json:"defaults"`
@@ -297,6 +303,7 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 	out := statePayload{
 		ConfigPath: s.cfgPath,
 		AuditPath:  b.AuditPath(),
+		SecretsDir: config.SecretsDir(s.cfgPath),
 		Version:    s.version,
 		Global:     cfg.GlobalPolicy(),
 		Defaults:   cfg.Defaults,
@@ -305,10 +312,12 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 		h := cfg.Hosts[i]
 		spec := cfg.EffectivePolicy(&h)
 		out.Hosts = append(out.Hosts, hostView{
-			Host:          h,
-			Effective:     spec,
-			EffectiveMode: spec.Mode,
-			Warnings:      hostWarnings(&h, spec),
+			Host:            h,
+			Effective:       spec,
+			EffectiveMode:   spec.Mode,
+			Warnings:        hostWarnings(&h, spec),
+			PasswordReady:   config.HasSecret(h.Auth.PasswordFile),
+			PassphraseReady: config.HasSecret(h.Auth.PassphraseFile),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -392,6 +401,84 @@ func (s *server) handleHost(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "DELETE")
 		writeErr(w, http.StatusMethodNotAllowed, errors.New("请用 DELETE"))
 	}
+}
+
+// handleSecret stores or clears the password or passphrase for one host.
+//
+// Typing a secret in the editor means "use this", so storing one also clears a
+// higher-precedence environment variable on that host. Leaving it would make
+// the freshly typed secret silently useless, which is the worse surprise; the
+// response says what was cleared so the editor can tell the operator.
+func (s *server) handleSecret(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Host  string `json:"host"`
+		Kind  string `json:"kind"`
+		Value string `json:"value"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("请求格式不对：%w", err))
+		return
+	}
+	kind := config.SecretKind(in.Kind)
+	switch kind {
+	case config.SecretPassword, config.SecretPassphrase:
+	default:
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("kind 只能是 password 或 passphrase，收到 %q", in.Kind))
+		return
+	}
+	current, err := s.broker().Config().Host(in.Host)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	updated := *current
+	cleared := ""
+
+	if in.Value == "" {
+		if err := config.DeleteSecret(s.cfgPath, in.Host, kind); err != nil {
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("删除失败：%w", err))
+			return
+		}
+		// Only forget a path that was ours; a hand-written path stays.
+		ours := config.SecretPath(s.cfgPath, in.Host, kind)
+		switch {
+		case kind == config.SecretPassword && updated.Auth.PasswordFile == ours:
+			updated.Auth.PasswordFile = ""
+		case kind == config.SecretPassphrase && updated.Auth.PassphraseFile == ours:
+			updated.Auth.PassphraseFile = ""
+		}
+	} else {
+		path, err := config.WriteSecret(s.cfgPath, in.Host, kind, in.Value)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("保存失败：%w", err))
+			return
+		}
+		if kind == config.SecretPassword {
+			cleared = updated.Auth.PasswordEnv
+			updated.Auth.PasswordEnv = ""
+			updated.Auth.PasswordFile = path
+		} else {
+			cleared = updated.Auth.PassphraseEnv
+			updated.Auth.PassphraseEnv = ""
+			updated.Auth.PassphraseFile = path
+		}
+	}
+
+	if err := config.UpsertHost(s.cfgPath, updated); err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	if err := s.reload(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	slog.Info("secret updated", "host", in.Host, "kind", kind, "stored", in.Value != "")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":          true,
+		"stored":      in.Value != "",
+		"cleared_env": cleared,
+		"path":        config.SecretPath(s.cfgPath, in.Host, kind),
+	})
 }
 
 func (s *server) handleTest(w http.ResponseWriter, r *http.Request) {

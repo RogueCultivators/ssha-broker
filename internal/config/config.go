@@ -524,7 +524,33 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	cfg.path = path
+	cfg.resolvePaths()
 	return cfg, nil
+}
+
+// resolvePaths anchors a host's file references to the config file's directory.
+// Otherwise `password_file: secrets/web.pass` would resolve against whatever
+// directory ssha happened to be started from, so the same config would work from
+// one place and break from another.
+func (c *Config) resolvePaths() {
+	dir := filepath.Dir(c.path)
+	for i := range c.Hosts {
+		a := &c.Hosts[i].Auth
+		a.KeyPath = anchorPath(dir, a.KeyPath)
+		a.PassphraseFile = anchorPath(dir, a.PassphraseFile)
+		a.PasswordFile = anchorPath(dir, a.PasswordFile)
+	}
+}
+
+func anchorPath(dir, p string) string {
+	if p == "" {
+		return p
+	}
+	p = ExpandHome(p)
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(dir, p)
 }
 
 // Common search locations, in precedence order.

@@ -606,6 +606,60 @@ if grep -q "name: broken" "$WORK/ui.yaml"; then fail "the rejected host was writ
 out=$(curl -s -H "X-SSHA-Token: $TOKEN" "http://127.0.0.1:$UI_PORT/api/audit?limit=5")
 contains "the audit panel has data" '"records"' "$out"
 
+# Typing a password in the editor stores it beside the config, never in it.
+pwfile="$WORK/secrets/ui-made.password"
+out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -X POST "http://127.0.0.1:$UI_PORT/api/secret" -d '{"host":"ui-made","kind":"password","value":"e2e-secret-pw"}')
+check "the editor stores a password" 0 $?
+contains "storing reports where it went" "password" "$out"
+[ -f "$pwfile" ] && pass "the secret file was created next to the config" || fail "no secret file at $pwfile"
+mode=$(stat -c '%a' "$pwfile" 2>/dev/null)
+[ "$mode" = "600" ] && pass "the secret file is 0600" || fail "secret file mode is $mode"
+contains "the config references the secret" "password_file" "$(cat "$WORK/ui.yaml")"
+if grep -q "e2e-secret-pw" "$WORK/ui.yaml"; then fail "the password was written into the config"; else pass "the password is not in the config"; fi
+
+out=$(curl -s -H "X-SSHA-Token: $TOKEN" "http://127.0.0.1:$UI_PORT/api/state")
+ready=$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(h["password_ready"] for h in d["hosts"] if h["name"]=="ui-made"))' <<<"$out")
+[ "$ready" = "True" ] && pass "the state reports the password as ready" || fail "password_ready is $ready"
+if printf '%s' "$out" | grep -q "e2e-secret-pw"; then fail "the password leaked into the state"; else pass "the password never appears in a response"; fi
+contains "the state says where secrets live" "secrets_dir" "$out"
+
+# Clearing removes the file and the reference together.
+curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -X POST "http://127.0.0.1:$UI_PORT/api/secret" -d '{"host":"ui-made","kind":"password","value":""}' >/dev/null
+if [ -f "$pwfile" ]; then fail "clearing did not delete the secret file"; else pass "clearing deletes the secret file"; fi
+if python3 - "$WORK/ui.yaml" <<'PY'
+import sys, yaml
+cfg = yaml.safe_load(open(sys.argv[1]))
+host = next((h for h in cfg["hosts"] if h["name"] == "ui-made"), {})
+sys.exit(1 if (host.get("auth") or {}).get("password_file") else 0)
+PY
+then pass "clearing removes the reference"; else fail "clearing left the reference behind"; fi
+
+# The whole point: a password typed into the editor is one the broker actually
+# uses. Create a host for the test container, store the real password through the
+# API, and connect.
+out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' -X POST "http://127.0.0.1:$UI_PORT/api/hosts" -d "{
+  \"name\": \"ui-pw\",
+  \"addr\": \"127.0.0.1\",
+  \"port\": $PORT,
+  \"user\": \"root\",
+  \"description\": \"password typed in the editor\",
+  \"auth\": {\"type\": \"password\"},
+  \"host_key\": {\"known_hosts\": \"$WORK/known_hosts\"}
+}"); check "a password host can be created" 0 $?
+curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -X POST "http://127.0.0.1:$UI_PORT/api/secret" -d '{"host":"ui-pw","kind":"password","value":"e2e-secret"}' >/dev/null
+out=$("$BIN" -c "$WORK/ui.yaml" run ui-pw -- uname -s 2>&1); check "a password typed in the editor really connects" 0 $?
+contains "and returns output" "Linux" "$out"
+
+# A wrong password must fail, or the check above proves nothing.
+curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -X POST "http://127.0.0.1:$UI_PORT/api/secret" -d '{"host":"ui-pw","kind":"password","value":"wrong"}' >/dev/null
+out=$("$BIN" -c "$WORK/ui.yaml" run ui-pw -- uname -s 2>&1); code=$?
+check "a wrong stored password fails" 1 "$code"
+contains "with an explanation" "password is probably wrong" "$out"
+
 curl -s -H "X-SSHA-Token: $TOKEN" -X DELETE "http://127.0.0.1:$UI_PORT/api/hosts/ui-made" >/dev/null
 if grep -q "name: ui-made" "$WORK/ui.yaml"; then fail "delete did not remove the host"; else pass "the editor deletes a host"; fi
 

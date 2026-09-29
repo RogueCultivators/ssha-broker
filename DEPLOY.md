@@ -84,7 +84,10 @@ sudo -u ssha ssha init --out /etc/ssha/config.yaml
 chmod 600 ~/.config/ssha/config.yaml
 ```
 
-密码文件同样：
+密码可以直接在界面里输（推荐）：打开主机，认证类型选「密码」，输进去保存——ssha 会写成
+`secrets/<主机>.password`（0600），配置里只留一行 `password_file`。
+
+也可以自己准备文件：
 
 ```bash
 install -m 600 /dev/null ~/.config/ssha/prod.pass
@@ -268,7 +271,7 @@ ssha audit verify
 | 登出后服务没了 | `loginctl enable-linger $USER` 没开 |
 | 浏览器里列表空、右上角报错 | 那是 401：URL 里的 token 过期（比如上一次跑的），用当前 token 重新打开 |
 | `hosts test` 报 `unknown host key` | 该主机没钉主机密钥，且不在 `host_key.known_hosts` 里。用界面里的扫描按钮，或 `ssha host-key <addr> --write` |
-| agent 报 `no password source configured` | 密码来源没配。MCP 不会交互式提问，必须给 `password_file` / `password_env` |
+| agent 报 `no password source configured` | 密码来源没配。MCP 不会交互式提问。最简单的办法是打开 `ssha ui`，在主机里选「密码」直接把密码输进去（会存成配置旁边的 `secrets/<主机>.password`，0600）；也可以自己给 `password_file` / `password_env` |
 
 ---
 

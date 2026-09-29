@@ -259,31 +259,61 @@
             <label for="f-key_path">私钥路径</label>
             <input id="f-key_path" placeholder="~/.ssh/id_ed25519">
           </div>
-          <div class="auth-key">
-            <label for="f-passphrase_file">私钥口令文件</label>
-            <input id="f-passphrase_file" placeholder="~/.config/ssha/key.pass">
-          </div>
-          <div class="auth-key">
-            <label for="f-passphrase_env">私钥口令环境变量</label>
-            <input id="f-passphrase_env" placeholder="SSHA_KEY_PASSPHRASE">
-          </div>
-          <div class="auth-key">
-            <label for="f-key_env">私钥内容环境变量（CI 用）</label>
-            <input id="f-key_env" placeholder="SSHA_PRIVATE_KEY">
-          </div>
-          <div class="auth-pw">
-            <label for="f-password_file">密码文件（一行，权限 600）</label>
-            <input id="f-password_file" placeholder="~/.config/ssha/prod.pass">
-          </div>
-          <div class="auth-pw">
-            <label for="f-password_env">密码环境变量（优先于文件）</label>
-            <input id="f-password_env" placeholder="SSHA_PROD_PASSWORD">
-          </div>
         </div>
+
+        <div class="auth-key" style="margin-top:12px">
+          <label for="f-passphrase">私钥口令</label>
+          <div class="row">
+            <input id="f-passphrase" type="password" autocomplete="new-password" placeholder="留空表示不修改">
+            <button type="button" id="passphrase-clear">清除</button>
+          </div>
+          <p class="hint" id="passphrase-state"></p>
+        </div>
+
+        <div class="auth-pw" style="margin-top:12px">
+          <label for="f-password">密码</label>
+          <div class="row">
+            <input id="f-password" type="password" autocomplete="new-password" placeholder="留空表示不修改">
+            <button type="button" id="password-clear">清除</button>
+          </div>
+          <p class="hint" id="password-state"></p>
+        </div>
+
         <p class="hint">
-          密码和口令永远不会写进配置文件，也不会出现在工具返回结果里。
-          两个来源都不填的话：命令行会交互式提问，MCP 会直接报错（不会卡住）。
+          直接在这里输就行，保存时 ssha 会写成一个 0600 的文件（见 <code id="secrets-dir">secrets/</code>）。
+          密码不会进配置文件、不会进审计日志、也不会出现在任何接口的返回里。
         </p>
+
+        <details class="adv" style="margin-top:8px">
+          <summary>高级：自己指定文件或环境变量</summary>
+          <div class="grid">
+            <div class="auth-key">
+              <label for="f-passphrase_file">口令文件</label>
+              <input id="f-passphrase_file" placeholder="~/.config/ssha/key.pass">
+            </div>
+            <div class="auth-key">
+              <label for="f-passphrase_env">口令环境变量</label>
+              <input id="f-passphrase_env" placeholder="SSHA_KEY_PASSPHRASE">
+            </div>
+            <div class="auth-key">
+              <label for="f-key_env">私钥内容环境变量（CI 用）</label>
+              <input id="f-key_env" placeholder="SSHA_PRIVATE_KEY">
+            </div>
+            <div class="auth-pw">
+              <label for="f-password_file">密码文件</label>
+              <input id="f-password_file" placeholder="~/.config/ssha/prod.pass">
+            </div>
+            <div class="auth-pw">
+              <label for="f-password_env">密码环境变量（优先于文件）</label>
+              <input id="f-password_env" placeholder="SSHA_PROD_PASSWORD">
+            </div>
+          </div>
+          <p class="hint">
+            环境变量的优先级高于文件：如果这里填了环境变量，上面输入的密码会被它盖掉。
+            所以在上面输密码时，ssha 会把这台主机的环境变量来源清掉，并告诉你它清了什么。
+            两个来源都没有的话：命令行会交互式提问，MCP 会直接报错（不会卡住）。
+          </p>
+        </details>
       </fieldset>
 
       <details class="adv">
@@ -519,11 +549,32 @@ function loadHost() {
   $("f-allow_meta").checked = !!p?.allow_shell_metacharacters;
   $("f-no_baseline").checked = !!p?.disable_baseline;
 
+  // Never carry a typed secret across hosts.
+  $("f-password").value = "";
+  $("f-passphrase").value = "";
+  renderSecretState(h);
   renderWarnings(h.warnings || []);
   syncAuthFields();
   syncPolicyFields();
   $("scan-out").textContent = "";
   $("result").textContent = "";
+}
+
+// renderSecretState says where a secret comes from, never what it is.
+function renderSecretState(h) {
+  const describe = (env, file, ready) => {
+    if (env) return `使用环境变量 <code>${esc(env)}</code>（优先级高于文件）`;
+    if (!file) return "还没有设置";
+    return ready
+      ? `已保存：<code>${esc(file)}</code>`
+      : `指向 <code>${esc(file)}</code>，但文件读不到或者是空的`;
+  };
+  $("password-state").innerHTML = describe(h.auth?.password_env, h.auth?.password_file, h.password_ready);
+  $("passphrase-state").innerHTML = describe(h.auth?.passphrase_env, h.auth?.passphrase_file, h.passphrase_ready);
+  if (state && state.secrets_dir) {
+    $("secrets-dir").textContent = state.secrets_dir.replace(/^.*\//, "");
+    $("secrets-dir").title = state.secrets_dir;
+  }
 }
 
 function renderWarnings(list) {
@@ -624,18 +675,43 @@ $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const h = collect();
   if (!h.name) { showResult("名称不能为空", true); return; }
+  const typed = [
+    ["password", $("f-password").value, "密码"],
+    ["passphrase", $("f-passphrase").value, "私钥口令"],
+  ].filter(([, v]) => v);
+
   $("save").disabled = true;
   try {
     await api("/api/hosts", { method: "POST", body: JSON.stringify(h) });
+    const notes = [];
+    for (const [kind, value, label] of typed) {
+      const r = await api("/api/secret", { method: "POST", body: JSON.stringify({ host: h.name, kind, value }) });
+      notes.push(`已保存${label}`);
+      if (r.cleared_env) notes.push(`（同时清空了环境变量 ${r.cleared_env}，它的优先级更高）`);
+    }
     selected = h.name;
     await refresh();
-    showResult("已保存到 " + state.config_path, false);
+    showResult(["已保存到 " + state.config_path, ...notes].join("　"), false);
   } catch (err) {
     showResult("保存失败：" + String(err.message || err), true);
   } finally {
     $("save").disabled = false;
   }
 });
+
+async function clearSecret(kind, label) {
+  if (!selected) return;
+  if (!confirm(`清除「${selected}」的${label}？`)) return;
+  try {
+    await api("/api/secret", { method: "POST", body: JSON.stringify({ host: selected, kind, value: "" }) });
+    await refresh();
+    showResult(`已清除${label}`, false);
+  } catch (err) {
+    showResult("清除失败：" + String(err.message || err), true);
+  }
+}
+$("password-clear").addEventListener("click", () => clearSecret("password", "密码"));
+$("passphrase-clear").addEventListener("click", () => clearSecret("passphrase", "私钥口令"));
 
 $("revert").addEventListener("click", loadHost);
 
@@ -798,6 +874,10 @@ async function refresh() {
   state = await api("/api/state");
   hosts = state.hosts || [];
   $("cfgpath").textContent = state.config_path;
+  if (state.secrets_dir) {
+    $("secrets-dir").textContent = state.secrets_dir.replace(/^.*\//, "");
+    $("secrets-dir").title = state.secrets_dir;
+  }
   renderList();
   if (selected && hosts.some((h) => h.name === selected)) loadHost();
   setStatus(`${hosts.length} 台主机`);
@@ -811,7 +891,7 @@ $("new").addEventListener("click", () => {
   $("form").hidden = false;
   const v = (id, val) => { $(id).value = val ?? ""; };
   ["f-name", "f-addr", "f-port", "f-user", "f-description", "f-tags",
-   "f-key_path", "f-key_env", "f-passphrase_env", "f-passphrase_file",
+   "f-key_path", "f-key_env", "f-passphrase_env", "f-passphrase_file", "f-password", "f-passphrase",
    "f-password_env", "f-password_file", "f-known_hosts", "f-fingerprints",
    "f-timeout", "f-max", "f-allow", "f-deny", "f-deny_paths", "f-redact_patterns",
    "f-proxy_jump", "f-work_dir"].forEach((id) => v(id, ""));
