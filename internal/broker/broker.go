@@ -51,6 +51,11 @@ type Broker struct {
 	pool     *sshx.Pool
 	prompt   sshx.PromptFunc
 
+	// redactors holds one identity scrubber per host that enabled
+	// redact_output. reveal is the operator override (--reveal).
+	redactors map[string]*redactor
+	reveal    bool
+
 	sessionID string
 	agent     *audit.Agent
 	actor     string
@@ -68,6 +73,9 @@ type Options struct {
 	Prompt sshx.PromptFunc
 	// AuditPath overrides config.Audit.Path when non-empty.
 	AuditPath string
+	// Reveal disables output redaction and host disclosure limits. It exists
+	// for the operator at the CLI only; agent-facing surfaces never set it.
+	Reveal bool
 }
 
 // Open loads the config, compiles policies and opens the audit log.
@@ -103,6 +111,7 @@ func OpenWithOptions(cfgPath string, opts Options) (*Broker, error) {
 		auditor:       auditor,
 		pool:          sshx.NewPool(5 * time.Minute),
 		prompt:        opts.Prompt,
+		reveal:        opts.Reveal,
 		sessionID:     newSessionID(),
 		agent:         audit.DetectAgent(),
 		actor:         audit.Actor(),
@@ -110,6 +119,7 @@ func OpenWithOptions(cfgPath string, opts Options) (*Broker, error) {
 		storeOutput:   cfg.Audit.StoreOutputEnabled(),
 		maxFieldBytes: maxField,
 	}
+	b.buildRedactors()
 	return b, nil
 }
 
@@ -141,13 +151,15 @@ func newSessionID() string {
 }
 
 // HostInfo is a redacted view of a configured host, safe to hand to an agent.
+// Fields that a host's disclosure policy withholds are omitted entirely rather
+// than sent empty, so a caller can tell "hidden" from "not configured".
 type HostInfo struct {
 	Name          string   `json:"name"`
-	Addr          string   `json:"addr"`
-	User          string   `json:"user"`
+	Addr          string   `json:"addr,omitempty"`
+	User          string   `json:"user,omitempty"`
 	Tags          []string `json:"tags,omitempty"`
 	Description   string   `json:"description,omitempty"`
-	Auth          string   `json:"auth"`
+	Auth          string   `json:"auth,omitempty"`
 	ProxyJump     string   `json:"proxy_jump,omitempty"`
 	WorkDir       string   `json:"work_dir,omitempty"`
 	PolicyMode    string   `json:"policy_mode"`
@@ -158,17 +170,24 @@ type HostInfo struct {
 	Disabled      bool     `json:"disabled,omitempty"`
 }
 
+// disclosure returns the effective disclosure level for a host, honouring the
+// operator's --reveal override.
+func (b *Broker) disclosure(h *config.Host) string {
+	if b.reveal {
+		return config.DisclosureFull
+	}
+	return b.cfg.EffectivePolicy(h).Disclosure
+}
+
 func (b *Broker) hostInfo(h *config.Host) HostInfo {
 	spec := b.cfg.EffectivePolicy(h)
-	return HostInfo{
+
+	// Everything that is not identity is always visible: the agent needs the
+	// name, the policy mode and the limits to work at all.
+	info := HostInfo{
 		Name:          h.Name,
-		Addr:          h.AddrPort(),
-		User:          h.User,
 		Tags:          h.Tags,
 		Description:   h.Description,
-		Auth:          h.AuthType(),
-		ProxyJump:     h.ProxyJump,
-		WorkDir:       h.WorkDir,
 		PolicyMode:    spec.Mode,
 		Allow:         spec.Allow,
 		Deny:          spec.Deny,
@@ -176,6 +195,22 @@ func (b *Broker) hostInfo(h *config.Host) HostInfo {
 		MaxOutputSize: spec.MaxOutputBytes,
 		Disabled:      h.Disabled,
 	}
+	switch level := b.disclosure(h); level {
+	case config.DisclosureBlind:
+		info.Tags = nil
+		info.Description = ""
+		info.Allow = nil
+		info.Deny = nil
+	case config.DisclosureAlias:
+		// Name, tags, description and policy only: no identity.
+	default:
+		info.Addr = h.AddrPort()
+		info.User = h.User
+		info.Auth = h.AuthType()
+		info.ProxyJump = h.ProxyJump
+		info.WorkDir = h.WorkDir
+	}
+	return info
 }
 
 // Hosts lists configured hosts, filtered by tags and name globs.
@@ -317,7 +352,7 @@ func (b *Broker) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
 	rec.ID = b.record(rec)
 	res.AuditID = rec.ID
 
-	return res, runErr
+	return b.redactExec(res), b.redactErr(h.Name, runErr)
 }
 
 // MultiExecRequest fans a command out over several hosts.
@@ -453,7 +488,7 @@ func (b *Broker) Upload(ctx context.Context, req UploadRequest) (*TransferResult
 	}
 	rec.ID = b.record(rec)
 	res.AuditID = rec.ID
-	return res, err
+	return b.redactTransfer(res), b.redactErr(h.Name, err)
 }
 
 // DownloadRequest describes a file download.
@@ -528,12 +563,31 @@ func (b *Broker) Download(ctx context.Context, req DownloadRequest) (*TransferRe
 	}
 	rec.ID = b.record(rec)
 	res.AuditID = rec.ID
-	return res, err
+	return b.redactTransfer(res), b.redactErr(h.Name, err)
 }
 
-// AuditQuery returns recent audit records.
+// AuditQuery returns recent audit records. The caller-facing copy of every
+// record is scrubbed; the file on disk keeps the original for forensics.
 func (b *Broker) AuditQuery(f audit.Filter, limit int) ([]audit.Record, error) {
-	return audit.Query(b.auditor.Path(), f, limit)
+	records, err := audit.Query(b.auditor.Path(), f, limit)
+	if err != nil || b.reveal {
+		return records, err
+	}
+	out := make([]audit.Record, len(records))
+	copy(out, records)
+	for i := range out {
+		r := &out[i]
+		red := b.redactors[r.Host]
+		if red == nil {
+			continue
+		}
+		r.Command = red.apply(r.Command)
+		r.Path = red.apply(r.Path)
+		r.Reason = red.apply(r.Reason)
+		r.Stdout = red.apply(r.Stdout)
+		r.Stderr = red.apply(r.Stderr)
+	}
+	return out, nil
 }
 
 // AuditVerify checks the hash chain of the audit log.
@@ -672,13 +726,14 @@ func (b *Broker) DescribeHost(name string) (HostInfo, error) {
 	return b.hostInfo(h), nil
 }
 
-// HostTest is the outcome of a connection self-test.
+// HostTest is the outcome of a connection self-test. Identity fields are
+// omitted for hosts whose disclosure policy withholds them.
 type HostTest struct {
 	Host               string `json:"host"`
 	OK                 bool   `json:"ok"`
-	Addr               string `json:"addr"`
-	User               string `json:"user"`
-	Auth               string `json:"auth"`
+	Addr               string `json:"addr,omitempty"`
+	User               string `json:"user,omitempty"`
+	Auth               string `json:"auth,omitempty"`
 	PolicyMode         string `json:"policy_mode"`
 	Via                string `json:"via,omitempty"`
 	HostKeyType        string `json:"host_key_type,omitempty"`
@@ -706,6 +761,18 @@ func (b *Broker) Test(ctx context.Context, name, probe string) *HostTest {
 		PolicyMode: b.cfg.EffectivePolicy(h).Mode,
 		Via:        h.ProxyJump,
 	}
+
+	// An agent may run the self-test too, so identity must not escape on any
+	// path - including a failed dial, which is exactly when it is easy to
+	// forget - and the error text must be scrubbed.
+	if b.disclosure(h) != config.DisclosureFull {
+		defer func() {
+			res.Addr, res.User, res.Auth, res.Via = "", "", "", ""
+			res.HostKeyType, res.HostKeyFingerprint = "", ""
+		}()
+	}
+	defer func() { res.Error = b.redact(name, res.Error) }()
+
 	target, err := b.resolveTarget(h)
 	if err != nil {
 		res.Error = err.Error()

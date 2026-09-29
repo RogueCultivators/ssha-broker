@@ -1,96 +1,61 @@
 #!/usr/bin/env python3
-"""Smoke-test the ssha MCP stdio server by speaking raw JSON-RPC."""
+"""Smoke-test the ssha MCP stdio server by speaking raw JSON-RPC.
+
+    ./scripts/mcp_smoke.py <config> [ssha-binary]
+"""
+
 import json
-import subprocess
-import sys
 import os
+import sys
 
-CONFIG = sys.argv[1] if len(sys.argv) > 1 else "/tmp/sshatest/ssha.yaml"
-BIN = sys.argv[2] if len(sys.argv) > 2 else "/tmp/ssha"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mcp_client import Server  # noqa: E402
 
-proc = subprocess.Popen(
-    [BIN, "-c", CONFIG, "mcp"],
-    stdin=subprocess.PIPE,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-    text=True,
-    bufsize=1,
-)
+CONFIG = sys.argv[1] if len(sys.argv) > 1 else "ssha.yaml"
+BIN = sys.argv[2] if len(sys.argv) > 2 else "ssha"
 
-next_id = [0]
+server = Server(BIN, CONFIG)
 
 
-def send(method, params=None, notify=False):
-    msg = {"jsonrpc": "2.0", "method": method}
-    if params is not None:
-        msg["params"] = params
-    if not notify:
-        next_id[0] += 1
-        msg["id"] = next_id[0]
-    proc.stdin.write(json.dumps(msg) + "\n")
-    proc.stdin.flush()
-    if notify:
-        return None
-    line = proc.stdout.readline()
-    if not line:
-        err = proc.stderr.read()
-        raise SystemExit(f"no response to {method}; stderr:\n{err}")
-    return json.loads(line)
-
-
-def show(title, resp):
+def show(title, value):
     print(f"\n=== {title} ===")
-    print(json.dumps(resp, indent=2)[:2000])
+    print(json.dumps(value, indent=2)[:2000])
 
 
-init = send(
+init = server.initialize()
+show(
     "initialize",
     {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "smoke", "version": "1"},
+        "serverInfo": init["serverInfo"],
+        "instructions": init.get("instructions", "")[:120],
     },
 )
-show("initialize", {"serverInfo": init["result"]["serverInfo"], "instructions": init["result"].get("instructions", "")[:120]})
-send("notifications/initialized", notify=True)
 
-tools = send("tools/list")
-names = [t["name"] for t in tools["result"]["tools"]]
+names = server.tool_names()
 print("\n=== tools/list ===")
 print(names)
 
-exec_resp = send(
-    "tools/call",
-    {"name": "ssh_exec", "arguments": {"host": "testbox", "command": "uname -sr"}},
-)
-show("tools/call ssh_exec (allowed)", exec_resp["result"])
+allowed = server.call("ssh_exec", {"host": "testbox", "command": "uname -sr"})
+show("tools/call ssh_exec (allowed)", allowed)
 
-deny_resp = send(
-    "tools/call",
-    {"name": "ssh_exec", "arguments": {"host": "testbox", "command": "mkfs.ext4 /dev/sda"}},
-)
-show("tools/call ssh_exec (denied)", deny_resp["result"])
+denied = server.call("ssh_exec", {"host": "testbox", "command": "mkfs.ext4 /dev/sda"})
+show("tools/call ssh_exec (denied)", denied)
 
-list_resp = send("tools/call", {"name": "ssh_list_hosts", "arguments": {}})
-show("tools/call ssh_list_hosts", list_resp["result"]["structuredContent"])
+hosts = server.structured("ssh_list_hosts", {})
+show("tools/call ssh_list_hosts", hosts)
 
-audit_resp = send("tools/call", {"name": "ssh_audit", "arguments": {"limit": 3}})
-show("tools/call ssh_audit", audit_resp["result"]["structuredContent"]["count"])
+audit = server.structured("ssh_audit", {"limit": 3})
+show("tools/call ssh_audit", audit["count"])
 
-check_resp = send(
-    "tools/call",
-    {"name": "ssh_policy_check", "arguments": {"host": "testbox", "command": "ls /"}},
-)
-show("tools/call ssh_policy_check", check_resp["result"]["structuredContent"])
+check = server.structured("ssh_policy_check", {"host": "testbox", "command": "ls /"})
+show("tools/call ssh_policy_check", check)
 
-proc.stdin.close()
-proc.wait(timeout=10)
-err = proc.stderr.read()
-if err.strip():
+stderr = server.close()
+if stderr.strip():
     print("\n=== server stderr ===")
-    print(err[:1000])
+    print(stderr[:1000])
 
-assert set(names) == {
+expected = {
     "ssh_list_hosts",
     "ssh_exec",
     "ssh_exec_many",
@@ -98,7 +63,9 @@ assert set(names) == {
     "ssh_download",
     "ssh_policy_check",
     "ssh_audit",
-}, names
-assert exec_resp["result"]["structuredContent"]["exit_code"] == 0
-assert "DENIED" in deny_resp["result"]["content"][0]["text"]
+}
+assert set(names) == expected, names
+assert allowed["structuredContent"]["exit_code"] == 0, allowed
+assert "DENIED" in denied["content"][0]["text"], denied
+assert check["allowed"] is True, check
 print("\nMCP SMOKE TEST PASSED")

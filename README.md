@@ -45,6 +45,7 @@ codex / pi / claude / cursor ─────┐         │                    �
 | readonly 绕过 | — | 默认拒绝 shell 元字符，`ls; rm -rf /tmp` 无法匹配 `^ls` |
 | 审计 | 日志文本 | 每条命令结构化记录 + SHA-256 哈希链，`ssha audit verify` 可检测篡改 |
 | 工具数量 | 动辄 30+ | 7 个，面向模型选择准确率设计 |
+| 主机身份 | agent 直连，地址/账号全暴露 | `disclosure` + `redact_output` 可只给别名，输出、错误、审计里的地址/账号全部换成 `<host>`/`<user>` |
 | 超时/输出上限 | agent 说了算 | 策略设上限，agent 只能收紧不能放宽 |
 | 多主机 | 逐个 | `ssh_exec_many` 按 tag 并行下发 |
 | 凭证类型 | 通常是 key 文件 | key / ssh-agent / password(env) / 加密 key + passphrase / ProxyJump |
@@ -205,6 +206,7 @@ server:
   非 loopback 地址会直接拒绝启动**（防止裸奔）。
 - 每个 token 有独立的 broker 视图：`ssh_list_hosts` 看不到无权主机，`ssh_exec` 会被
   拒绝，`ssh_audit` 也只会返回它有权主机的记录。
+- 想连“配置文件对 agent 不可读”也一起解决，用 §5.3 的专用用户部署方式。
 
 ---
 
@@ -307,9 +309,98 @@ testbox     ok      key       -    SHA256:Pp9s7QXv... (ecdsa-sha2-nistp256)   10
 legacy-db   FAIL    password  -    -                                          47ms    ... the password is probably wrong
 ```
 
-## 5. 接入各种 agent
+## 5. 让大模型看不到 IP / 账号 / 密码
 
-### 5.1 MCP（Codex / Claude Code / Cursor）
+三样东西要分开看，保护强度完全不同：
+
+| | 默认 | 怎么保证 |
+|---|---|---|
+| 密码 / 私钥 / 口令 | **绝不外泄** | 只在 broker 内存里，不进工具结果、不进审计。来源是 `password_file` / `*_env` / CLI 交互输入 |
+| IP / 端口 / 账号 | 可配置隐藏 | `policy.disclosure: alias` + `policy.redact_output: true` |
+| 主机名（别名） | 一定可见 | 这是 agent 唯一的寻址方式，例如 `prod-web` |
+
+### 5.1 只暴露别名
+
+```yaml
+policy:
+  disclosure: alias        # full | alias | blind
+  redact_output: true
+  redact_patterns:
+    - '\b\d{1,3}(\.\d{1,3}){3}\b'    # 任何 IPv4 都替换掉
+```
+
+- `ssh_list_hosts` / `ssha hosts list` 只返回 `name`、`tags`、`description` 和策略；
+  `addr` / `user` / `auth` / `proxy_jump` / `work_dir` 这些 key **直接不出现在 JSON 里**
+  （不是空字符串，是彻底没有）。
+- 命令输出里出现配置的地址、端口、用户名，会被换成 `<host>` / `<user>`；
+  `redact_patterns` 命中的内容换成 `<redacted>`。
+- **连接错误、策略拒绝原因、`ssha audit` 的历史记录同样会被替换**——这几处是最容易顺手
+  把地址漏出去的地方。
+- agent 实际看到的：
+
+```
+$ ssha run customer-vm-42 -- cat /tmp/info.txt
+addr=<host> user=<user> token=<redacted>
+```
+
+- **磁盘上的审计日志保留原文**（运维取证要用），只有交给 agent 的那一份被改写。
+  运维自己看：`ssha audit ls --reveal`。
+
+`disclosure` / `redact_output` 对 MCP 是强制的：`ssha mcp` 会忽略 `--reveal`
+（e2e 里有专门断言，防止以后被改坏）。
+
+### 5.2 三个边界（诚实说明）
+
+1. **`--reveal` 不是安全边界**。它是给运维在 CLI 上用的开关。如果 LLM 就在你本机、能执行任意
+   shell（pi / Claude Code 的 bash 工具就是），它完全可以绕开 ssha 直接读 `ssha.yaml`、
+   密码文件、`~/.ssh/id_rsa`。**遮蔽防的是"顺手泄漏"，不是有决心的攻击者。**
+2. **命令能拿到的事实，遮蔽只能在字符串层面挡**。`hostname`、`ip a`、`env`、`cat /etc/hosts`、
+   `curl ifconfig.me` 都能暴露真实身份。配置里的地址会被自动替换，**别的**地址要靠
+   `redact_patterns` 兜住。要彻底就上 `disclosure: blind` + `mode: readonly` 白名单，
+   别让 agent 跑这些命令。
+3. **共享地址会互相泄漏**。如果 `testbox`（full）和 `customer-vm-42`（alias）其实是同一台机器，
+   agent 从前者的 `addr` 就知道了后者的地址。要么两台的 `disclosure` 设成一致，要么避免这种重叠。
+
+### 5.3 真正的隔离：把凭证关进另一个用户
+
+上面第 1 条的根治办法是让 agent 进程**在文件系统上读不到**配置。做法：
+
+```bash
+# 1. 建一个专用系统用户
+sudo useradd --system --create-home --shell /usr/sbin/nologin ssha
+
+# 2. 配置、密钥、密码文件都归它，且只有它能读
+sudo install -d -o ssha -g ssha -m 700 /etc/ssha
+sudo install -o ssha -g ssha -m 600 ssha.yaml   /etc/ssha/config.yaml
+sudo install -o ssha -g ssha -m 600 prod.pass   /etc/ssha/prod.pass
+
+# 3. 以 ssha 用户跑 HTTP MCP，只监听 loopback
+sudo -u ssha ssha --config /etc/ssha/config.yaml mcp --http 127.0.0.1:8765
+```
+
+```yaml
+server:
+  tokens:
+    - name: my-agent
+      value_env: SSHA_TOKEN
+      tags: [customer]        # 这个 token 只够得着这些主机
+```
+
+支持 streamable HTTP 的客户端（Claude Code、Cursor 等）只配一个 URL 和 token：
+
+```json
+{ "mcpServers": { "ssha": {
+    "url": "http://127.0.0.1:8765/mcp",
+    "headers": { "Authorization": "Bearer <token>" }
+} } }
+```
+
+这样 agent 进程（以你自己的账号运行）**根本读不到** ssha 的配置和密码，`--reveal` 也无从谈起——
+遮蔽从"约定"变成了"权限"。配合 `security` 的 token 作用域，一个 agent 也就只能碰你划给它的那几台机器。
+
+## 6. 接入各种 agent
+
+### 6.1 MCP（Codex / Claude Code / Cursor）
 
 stdio 模式是通用做法。
 
@@ -351,7 +442,7 @@ claude mcp add ssha -- ssha mcp
 > 工具描述里写死了行为约定：denied 不要重试、非零 exit_code 是正常结果、
 > timeout/输出上限只能收紧。这些是给模型看的「接口契约」。
 
-### 5.2 pi — 方式 A：Skill（推荐）
+### 6.2 pi — 方式 A：Skill（推荐）
 
 ```bash
 ssha skill install              # 装到 ~/.agents/skills/ssha-agent/SKILL.md
@@ -361,7 +452,7 @@ skill 教模型用 `ssha hosts list` / `policy check` / `run --json` / `audit` �
 并在描述里声明「用户要求操作远端主机时」触发。pi 会扫描 `~/.agents/skills/`，
 Claude Code 也认这个路径。
 
-### 5.3 pi — 方式 B：原生 Extension
+### 6.3 pi — 方式 B：原生 Extension
 
 ```bash
 cp extensions/pi/ssha-agent.ts ~/.pi/agent/extensions/
@@ -373,7 +464,7 @@ cp extensions/pi/ssha-agent.ts ~/.pi/agent/extensions/
 
 两种方式可以共存：MCP/Extension 提供结构化工具，Skill 提供「什么时候用、怎么用」的知识。
 
-### 5.4 任意有 bash 的 agent
+### 6.4 任意有 bash 的 agent
 
 只要能执行命令，就能用 `ssha run --json ...`，退出码语义明确：
 
@@ -387,19 +478,21 @@ cp extensions/pi/ssha-agent.ts ~/.pi/agent/extensions/
 
 ---
 
-## 6. 安全模型
+## 7. 安全模型
 
 **保护的是什么**
 
 1. **凭证不出 broker**：agent 只传主机名，私钥/密码/口令都留在 broker 进程可达的地方。
    密码可以来自 0600 文件而不是环境变量，避免泄漏到子进程环境与 `ps` 输出。
-2. **策略前置**：`ssh_exec`/`upload`/`download` 都在建立连接*之前*做策略判定，拒绝的
+2. **身份默认可见，但开关就位**：`disclosure` + `redact_output` 可以把地址、端口、
+   账号乃至自定义正则从每一个工具结果里塔掉，审计文件仍留原文（详见 §5）。
+3. **策略前置**：`ssh_exec`/`upload`/`download` 都在建立连接*之前*做策略判定，拒绝的
    请求不会触达目标机，但依然写审计（`decision: denied` + 原因）。
-3. **审计不可静默篡改**：哈希链 + `audit verify`。sha256 链只保证「可检测」，不保证
+4. **审计不可静默篡改**：哈希链 + `audit verify`。sha256 链只保证「可检测」，不保证
    「不可删除」——要防删除请把 `audit.jsonl` 同步到外部（rsync/WORM 存储）。
-4. **最小工具面**：没有 `ssh_shell` 交互式会话，没有端口转发（见 Roadmap），减少了
+5. **最小工具面**：没有 `ssh_shell` 交互式会话，没有端口转发（见 Roadmap），减少了
    被诱导做坏事的表面积。
-5. **上限不可突破**：超时和输出上限由策略设定，agent 只能更严格。
+6. **上限不可突破**：超时和输出上限由策略设定，agent 只能更严格。
 
 **已知限制（诚实说明）**
 
@@ -407,7 +500,10 @@ cp extensions/pi/ssha-agent.ts ~/.pi/agent/extensions/
   绕过，但 `sudo` 的配置、目标机上的 wrapper 脚本、`find -exec` 这类不在白名单里的东西
   仍然是攻击面。真正的隔离要靠目标机自身的权限（专用低权账号、sudoers 白名单）。
 - `env` 由 agent 可控（`-e KEY=VAL`），目标机上若有依赖环境变量的 setuid/脚本可能有风险。
-- broker 以当前 OS 用户的权限运行，配置文件对它可读即可读到凭证来源路径。
+- broker 以当前 OS 用户的权限运行，配置文件对它可读即可读到凭证来源路径。要让
+  agent 真的读不到，需要 §5.3 的“专用用户 + HTTP MCP”部署方式。
+- 遮蔽（`redact_output`）是字符串层面的：配置的地址/用户名能自动塔掉，其他形式的
+  身份（反向 DNS、内网域名、云元数据）需要 `redact_patterns` 或干脆不让 agent 执行相关命令。
 - HTTP 模式目前是共享 Bearer token，没有 per-user 身份、限流和 mTLS。
 
 **建议的部署姿势**：每台 agent 一个低权专用账号（不是 root），`readonly` 为默认，
@@ -415,7 +511,7 @@ cp extensions/pi/ssha-agent.ts ~/.pi/agent/extensions/
 
 ---
 
-## 7. CLI 参考
+## 8. CLI 参考
 
 ```
 ssha init [--out ssha.yaml] [--force]
@@ -438,11 +534,16 @@ ssha version
 
 所有命令都支持 `--json`；flag 可以放在主机名前面或后面（`ssha run web-1 --cwd /etc -- ls`
 和 `ssha run --cwd /etc web-1 -- ls` 等价），`--` 之后一律原样作为远端命令。
-全局 `--no-prompt` 关闭交互式密码询问（默认在 stdin 是终端时开启）。
+
+两个全局开关：
+
+- `--reveal`：运维模式。显示真实的 `addr` / `user`，并且不做输出遮蔽。
+  `ssha mcp` 强制忽略它（agent 路径）。
+- `--no-prompt`：禁止交互询问密码/口令（默认在 stdin 是终端时开启）。
 
 ---
 
-## 8. 开发与测试
+## 9. 开发与测试
 
 ```bash
 go build ./...            # 构建
@@ -480,7 +581,7 @@ scripts/                  e2e 与 MCP 冒烟脚本
 
 ---
 
-## 9. Roadmap
+## 10. Roadmap
 
 - [ ] 交互式会话与端口转发（`ssh_shell` / `ssh_tunnel`），带会话录像（asciinema cast）
 - [ ] 会话级别审批：`require_approval_commands` + 一次性 token
@@ -490,6 +591,6 @@ scripts/                  e2e 与 MCP 冒烟脚本
 - [ ] 每命令资源配额（CPU/内存 cgroup）、命令去重与限流
 - [ ] Web UI：主机清单 + 审计检索（只读）
 
-## 10. License
+## 11. License
 
 MIT

@@ -40,7 +40,13 @@ Rules and behavior:
 - When a result says "denied", do not retry the same command; choose an allowed approach or stop and report.
 - Credentials live on the ssha server and are never sent to you. If a host reports a missing
   password source or a host key mismatch, report it to the user; do not attempt to change the
-  ssha configuration or the ssh known_hosts file yourself.`
+  ssha configuration or the ssh known_hosts file yourself.
+- A host may withhold its identity: its address, port, user and proxy are then absent from
+  tool results, and any that appear in output, errors or audit records are replaced with
+  <host>, <user> or <redacted>. Treat those as opaque identifiers, not as missing data.
+  Do not try to discover the real values (no /etc/hosts, hostname -I, ip a, curl ifconfig.me).
+- Never pass --reveal to the ssha CLI: that flag disables identity hiding and is for the
+  human operator only.`
 
 // New builds an MCP server bound to a backend.
 func New(be Backend, name, version string) *mcp.Server {

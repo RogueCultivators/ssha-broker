@@ -112,6 +112,24 @@ ssha run web-1 --json -- systemctl is-active nginx
 | non-zero `exit_code` in JSON | the remote command ran and failed; read `stderr` |
 | `truncated: true` | output was capped; the full text is in the audit log |
 
+## Hidden identity
+
+A host may be configured to withhold its identity from you. When it is, the
+address, the port, the user name and the proxy are simply absent from
+tool results, and any that would have appeared in output, in an error message
+or in the audit log are replaced:
+
+| Placeholder | Stands for |
+|---|---|
+| `<host>` | the server's address or host name |
+| `<user>` | the account the broker logs in as |
+| `<redacted>` | something the operator listed in `redact_patterns` |
+
+These are not missing data to be filled in. Do not try to discover the real
+values: do not read `/etc/hosts`, run `hostname -I`, `ip a`, `curl ifconfig.me`
+or similar, and do not ask the user to reveal them. If a task genuinely needs
+the address, say so and let the operator decide.
+
 ## Rules
 
 - Do not retry a denied command and do not try to disguise it (no `sh -c`
@@ -126,6 +144,8 @@ ssha run web-1 --json -- systemctl is-active nginx
   config to work around a failure. Fix the config through the user, not by
   weakening it. `ssha host-key <addr> --write` is the only sanctioned way to
   pin a new host key, and it refuses to overwrite a conflicting one.
+- `--reveal` switches off identity hiding and is for the operator, not for you.
+  Do not add it.
 
 ## When a connection fails
 

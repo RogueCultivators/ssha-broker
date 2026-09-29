@@ -52,6 +52,7 @@ type Compiled struct {
 	deny      []*regexp.Regexp
 	allow     []*regexp.Regexp
 	denyPaths []*regexp.Regexp
+	redact    []*regexp.Regexp
 }
 
 // Decision is the outcome of a policy check.
@@ -95,6 +96,9 @@ func Compile(spec config.Spec) (*Compiled, error) {
 		return nil, err
 	}
 	if c.denyPaths, err = compileAll(spec.DenyPaths, false); err != nil {
+		return nil, err
+	}
+	if c.redact, err = compileAll(spec.RedactPatterns, false); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -179,6 +183,10 @@ func (c *Compiled) DecidePath(path string, write bool) Decision {
 	}
 	return d
 }
+
+// RedactPatterns returns the operator-supplied expressions whose matches are
+// scrubbed from command output before it reaches the caller.
+func (c *Compiled) RedactPatterns() []*regexp.Regexp { return c.redact }
 
 // Timeout returns the effective per-command timeout.
 func (c *Compiled) MaxOutputBytes() int { return c.Spec.MaxOutputBytes }

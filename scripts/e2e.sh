@@ -139,6 +139,21 @@ hosts:
     auth: {type: password, password_file: $WORK/password.txt}
     host_key: {known_hosts: $WORK/known_hosts}
     policy: {mode: allow}
+  # The identity of this host must never reach the agent.
+  - name: secret
+    description: identity withheld from agents
+    addr: 127.0.0.1
+    port: $PORT
+    user: root
+    tags: [secret]
+    auth: {type: key, key_path: $WORK/id_ed25519}
+    host_key: {known_hosts: $WORK/known_hosts}
+    work_dir: /tmp
+    policy:
+      mode: allow
+      disclosure: alias
+      redact_output: true
+      redact_patterns: ['\bSECRET-[A-Z0-9]+\b']
 EOF
 printf 'e2e-secret\n' > "$WORK/password.txt"
 chmod 600 "$WORK/password.txt"
@@ -313,6 +328,120 @@ contains "tamper report names the record" "hash mismatch" "$out"
 
 id=$("$BIN" audit ls --json --limit 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["records"][0]["id"])')
 out=$("$BIN" audit show "$id"); contains "audit show finds a record" "$id" "$out"
+
+# ---------------------------------------------------------------------------
+log "cli: privacy (disclosure and redaction)"
+
+# The agent-facing view must not carry the address or the user name.
+out=$("$BIN" hosts show secret); check "hosts show on a hidden host" 0 $?
+contains "the hidden host keeps its description" "identity withheld" "$out"
+contains "the hidden host still shows its policy" "policy mode" "$out"
+contains "the hidden host says the address is withheld" "withheld by policy" "$out"
+if printf '%s' "$out" | grep -qE '127\.0\.0\.1|root@'; then fail "hosts show leaked the address or user"; else pass "hosts show reveals no address or user"; fi
+
+# The operator can always look; that is what --reveal is for.
+out=$("$BIN" --reveal hosts show secret)
+contains "--reveal shows the address again" "root@127.0.0.1:$PORT" "$out"
+
+# The machine-readable form matters most: that is what an agent parses.
+if "$BIN" hosts list --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+h = [x for x in d["hosts"] if x["name"] == "secret"][0]
+sys.exit(0 if "addr" not in h and "user" not in h and "auth" not in h else 1)
+'; then
+  pass "the json host list omits addr, user and auth"
+else
+  fail "the json host list leaked identity"
+fi
+
+# Redaction covers whatever a command happens to print. Put the secrets in a
+# file on the remote so the command itself stays clean - that is the realistic
+# case, and it means only the output can leak them.
+printf 'addr=127.0.0.1:%s user=root token=SECRET-ABC123\n' "$PORT" > "$WORK/leak.txt"
+"$BIN" upload secret "$WORK/leak.txt" /tmp/leak.txt >/dev/null; check "upload to a hidden host" 0 $?
+
+out=$("$BIN" run secret -- cat /tmp/leak.txt)
+check "a command on a hidden host runs" 0 $?
+contains "the address is redacted" "addr=<host>" "$out"
+contains "the user name is redacted" "user=<user>" "$out"
+contains "a custom redact_pattern is replaced" "token=<redacted>" "$out"
+if printf '%s' "$out" | grep -qE '127\.0\.0\.1|SECRET-ABC123'; then fail "raw identity survived redaction"; else pass "no raw identity or secret survived"; fi
+
+out=$("$BIN" run secret -- whoami)
+contains "whoami is redacted" "<user>" "$out"
+
+out=$("$BIN" run secret --json -- cat /tmp/leak.txt)
+check "a redacted json run succeeds" 0 $?
+if printf '%s' "$out" | grep -qE '127\.0\.0\.1|SECRET-ABC123'; then fail "the json result leaked"; else pass "the json result is redacted too"; fi
+
+# The self-test is an operator tool, but an agent can run it too.
+out=$("$BIN" hosts test secret --json)
+check "hosts test on a hidden host" 0 $?
+contains "hosts test still reports success" '"ok": true' "$out"
+if printf '%s' "$out" | grep -qE '127\.0\.0\.1|"addr"|"user"|"auth"|SHA256:'; then
+  fail "hosts test leaked identity or the host key"
+else
+  pass "hosts test omits the identity fields and the host key"
+fi
+out=$("$BIN" --reveal hosts test secret)
+contains "--reveal shows the host key fingerprint" "SHA256:" "$out"
+
+# An error message is the easiest place to leak an address by accident.
+cat > "$WORK/badhost.yaml" <<EOF
+version: 1
+audit: {path: $WORK/audit.jsonl}
+hosts:
+  - name: unreachable
+    addr: 127.0.0.1
+    port: 1
+    user: root
+    auth: {type: key, key_path: $WORK/id_ed25519}
+    host_key: {insecure: true}
+    policy: {mode: allow, disclosure: alias, redact_output: true, timeout: 1s}
+EOF
+out=$($BIN -c "$WORK/badhost.yaml" run unreachable -- uname -s 2>&1)
+if printf '%s' "$out" | grep -qE '127\.0\.0\.1|:1\b'; then fail "a connection error leaked the address"; else pass "connection errors are redacted too"; fi
+
+# The same must hold on the self-test failure path, which is easy to forget.
+out=$($BIN -c "$WORK/badhost.yaml" hosts test unreachable --json 2>&1)
+if printf '%s' "$out" | grep -qE '127\.0\.0\.1|"addr"|"user"|"auth"'; then
+  fail "a failed self-test leaked identity"
+else
+  pass "a failed self-test is clean too"
+fi
+contains "the failed self-test still explains why" "connection refused" "$out"
+
+# The audit log is the operator's own record: it keeps the original text.
+if grep -q "SECRET-ABC123" "$WORK/audit.jsonl"; then pass "the audit log keeps the raw output"; else fail "the audit log lost the raw output"; fi
+
+# ...but the agent's read of that log is scrubbed as well.
+out=$("$BIN" audit ls --host secret --json)
+if printf '%s' "$out" | grep -q "SECRET-ABC123"; then fail "the agent-facing audit leaked the pattern"; else pass "the agent-facing audit is redacted"; fi
+out=$("$BIN" --reveal audit ls --host secret --json)
+contains "--reveal restores the raw audit" "SECRET-ABC123" "$out"
+
+# A denial reason must not leak either.
+out=$("$BIN" run secret -- mkfs.ext4 /dev/sda 2>&1); code=$?
+check "a denied command on a hidden host" 77 "$code"
+if printf '%s' "$out" | grep -qE '127\.0\.0\.1|root@'; then fail "the denial leaked identity"; else pass "the denial is clean"; fi
+
+# MCP is the surface an agent actually uses, so prove it holds the line.
+if out=$(python3 "$REPO/scripts/mcp_privacy.py" "$WORK/ssha.yaml" "$BIN" 127.0.0.1 2>&1); then
+  pass "mcp never reveals host identity"
+else
+  fail "mcp privacy check"
+  printf '%s\n' "$out" | sed 's/^/    /'
+fi
+
+# ...and it must not be possible to talk it out of hiding things, even if the
+# operator passes the flag that normally reveals them at the CLI.
+if out=$(python3 "$REPO/scripts/mcp_privacy.py" "$WORK/ssha.yaml" "$BIN" 127.0.0.1 --reveal 2>&1); then
+  pass "mcp ignores --reveal"
+else
+  fail "mcp honoured --reveal"
+  printf '%s\n' "$out" | sed 's/^/    /'
+fi
 
 # ---------------------------------------------------------------------------
 log "skill"

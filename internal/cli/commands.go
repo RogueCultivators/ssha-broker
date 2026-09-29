@@ -231,7 +231,11 @@ func renderHostDetail(h broker.HostInfo) string {
 	}
 	row("name", h.Name)
 	row("description", h.Description)
-	row("address", fmt.Sprintf("%s@%s", h.User, h.Addr))
+	if h.Addr == "" {
+		row("address", "withheld by policy (use --reveal to see it)")
+	} else {
+		row("address", fmt.Sprintf("%s@%s", h.User, h.Addr))
+	}
 	row("tags", strings.Join(h.Tags, ", "))
 	row("auth", h.Auth)
 	row("via jump host", h.ProxyJump)
@@ -1035,7 +1039,9 @@ func (a *App) cmdMCP(args []string) int {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(a.Stderr, &slog.HandlerOptions{Level: level})))
 
-	b, err := a.open()
+	// The MCP transport is agent-facing: never install an interactive prompt and
+	// never reveal host identity, whatever flags the operator passed.
+	b, err := broker.OpenDefaultWithOptions(a.ConfigPath, broker.Options{})
 	if err != nil {
 		return a.fail(err)
 	}

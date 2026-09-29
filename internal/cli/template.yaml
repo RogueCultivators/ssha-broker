@@ -24,6 +24,17 @@ defaults:
 # The default policy applied to every host. Prefer tight, per-host overrides.
 policy:
   mode: allow
+  # How much of a host's identity a caller (in practice an AI agent) may see:
+  #   full  - name, address, port, user, auth type (default)
+  #   alias - name, tags, description and policy; no address/port/user/proxy
+  #   blind - name, policy mode and limits only
+  # Credentials are never disclosed at any level.
+  disclosure: full
+  # redact_output rewrites the host address, the user name and every
+  # redact_patterns match in command output before it reaches the caller. The
+  # audit log on disk keeps the original for forensics.
+  redact_output: false
+  # redact_patterns: ['\b\d{1,3}(\.\d{1,3}){3}\b']   # e.g. any IPv4 literal
   # Regular expressions, matched anywhere in the command. Deny always wins
   # over allow. Deny lists are easy to bypass; for an untrusted agent prefer
   # mode: readonly with an explicit allow list.
@@ -142,6 +153,32 @@ hosts:
       known_hosts: ~/.ssh/known_hosts
     policy:
       mode: deny           # agents must not run commands on the bastion itself
+
+  # Example: everything the agent is told is deliberately vague. It can use the
+  # host by name, but the address, the port, the account and anything matching
+  # redact_patterns are kept out of tool results. The audit log still records
+  # the real text for the operator (`ssha audit ls --reveal`).
+  - name: customer-vm-42
+    description: A customer instance. Identity is withheld from agents.
+    addr: 203.0.113.42
+    port: 2222
+    user: svc-ops
+    tags: [customer]
+    auth:
+      type: password
+      password_file: ~/.config/ssha/customer-42.pass
+    host_key:
+      fingerprints: ["SHA256:replace-me"]
+    policy:
+      mode: readonly
+      disclosure: alias
+      redact_output: true
+      redact_patterns:
+        - '\b\d{1,3}(\.\d{1,3}){3}\b'   # hide any other IPv4 that shows up
+      allow_commands:
+        - '^uptime\b'
+        - '^df\b'
+        - '^systemctl\s+status\b'
 
   # A host that authenticates with a password. The password never belongs in
   # this file. Prefer password_file for anything an agent will reach over MCP,

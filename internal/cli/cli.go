@@ -48,6 +48,7 @@ Commands:
 Global flags (before the command):
   -c, --config PATH   config file (default: $SSHA_CONFIG, ./ssha.yaml, ~/.config/ssha/config.yaml)
       --json          machine-readable output
+      --reveal        operator mode: show real host details, do not redact output
       --no-prompt     never ask for a password or passphrase interactively
   -h, --help          show help
 
@@ -60,6 +61,7 @@ type App struct {
 	ConfigPath string
 	JSON       bool
 	NoPrompt   bool
+	Reveal     bool
 	Version    string
 	Stdout     io.Writer
 	Stderr     io.Writer
@@ -75,6 +77,7 @@ func Run(args []string, version string) int {
 	global.StringVar(&a.ConfigPath, "c", "", "")
 	global.BoolVar(&a.JSON, "json", false, "")
 	global.BoolVar(&a.NoPrompt, "no-prompt", false, "")
+	global.BoolVar(&a.Reveal, "reveal", false, "")
 	help := global.Bool("help", false, "")
 	global.BoolVar(help, "h", false, "")
 
@@ -142,9 +145,12 @@ func (a *App) fail(err error) int {
 	return ExitFail
 }
 
-// open loads the broker, honouring --config and interactive prompting.
+// open loads the broker, honouring --config, --reveal and prompting.
 func (a *App) open() (*broker.Broker, error) {
-	b, err := broker.OpenDefaultWithOptions(a.ConfigPath, broker.Options{Prompt: a.promptFunc()})
+	b, err := broker.OpenDefaultWithOptions(a.ConfigPath, broker.Options{
+		Prompt: a.promptFunc(),
+		Reveal: a.Reveal,
+	})
 	if err != nil {
 		if errors.Is(err, broker.ErrNoConfig) {
 			return nil, fmt.Errorf("%w\n\nCreate one with `ssha init` or pass --config PATH", err)
@@ -178,6 +184,7 @@ func (a *App) newFlagSet(name string) *flag.FlagSet {
 	fs.StringVar(&a.ConfigPath, "c", a.ConfigPath, "")
 	fs.BoolVar(&a.JSON, "json", a.JSON, "")
 	fs.BoolVar(&a.NoPrompt, "no-prompt", a.NoPrompt, "")
+	fs.BoolVar(&a.Reveal, "reveal", a.Reveal, "")
 	return fs
 }
 

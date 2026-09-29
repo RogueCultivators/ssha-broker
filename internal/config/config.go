@@ -26,6 +26,19 @@ const (
 	ModeDeny = "deny"
 )
 
+// Disclosure levels control how much of a host's identity the caller (in
+// practice, an AI agent) is allowed to see. Credentials are never disclosed at
+// any level.
+const (
+	// DisclosureFull shows name, address, port, user and auth type. Default.
+	DisclosureFull = "full"
+	// DisclosureAlias shows the name, tags, description and policy, but hides
+	// the address, port, user, proxy and working directory.
+	DisclosureAlias = "alias"
+	// DisclosureBlind shows the name, policy mode and limits only.
+	DisclosureBlind = "blind"
+)
+
 // Duration is a YAML-friendly time.Duration ("60s", "5m").
 type Duration time.Duration
 
@@ -82,6 +95,16 @@ type Spec struct {
 	// shell string cannot otherwise stop `ls; rm -rf /tmp` from matching a
 	// `^ls` rule.
 	AllowShellMetachars bool `yaml:"allow_shell_metacharacters"`
+	// Disclosure is full, alias or blind. It limits what an agent learns about
+	// a host's identity: at alias and blind the address, port, user and proxy
+	// are omitted from every tool result. Credentials are never disclosed.
+	Disclosure string `yaml:"disclosure"`
+	// RedactOutput replaces the host address, the user name and every
+	// RedactPatterns match in command output before it is returned. The audit
+	// log on disk keeps the original.
+	RedactOutput bool `yaml:"redact_output"`
+	// RedactPatterns are extra regular expressions replaced with <redacted>.
+	RedactPatterns []string `yaml:"redact_patterns"`
 }
 
 // Defaults applied when neither the global nor the host spec sets a value.
@@ -105,6 +128,9 @@ func (s Spec) WithDefaults() Spec {
 	}
 	if s.Mode == "" {
 		s.Mode = ModeAllow
+	}
+	if s.Disclosure == "" {
+		s.Disclosure = DisclosureFull
 	}
 	return s
 }
@@ -138,6 +164,15 @@ func Merge(base Spec, over *Spec) Spec {
 	}
 	if over.AllowShellMetachars {
 		out.AllowShellMetachars = true
+	}
+	if over.RedactOutput {
+		out.RedactOutput = true
+	}
+	if over.RedactPatterns != nil {
+		out.RedactPatterns = over.RedactPatterns
+	}
+	if over.Disclosure != "" {
+		out.Disclosure = over.Disclosure
 	}
 	return out.WithDefaults()
 }
@@ -377,6 +412,11 @@ func (c *Config) Validate() error {
 		case ModeAllow, ModeReadonly, ModeDeny:
 		default:
 			return fmt.Errorf("config: host %q: unknown policy mode %q", h.Name, spec.Mode)
+		}
+		switch spec.Disclosure {
+		case DisclosureFull, DisclosureAlias, DisclosureBlind:
+		default:
+			return fmt.Errorf("config: host %q: unknown policy disclosure %q (want full, alias or blind)", h.Name, spec.Disclosure)
 		}
 		if spec.Mode == ModeReadonly && len(spec.Allow) == 0 {
 			return fmt.Errorf("config: host %q: policy mode readonly requires at least one allow_commands entry", h.Name)

@@ -269,6 +269,54 @@ hosts:
 	}
 }
 
+func TestDisclosureDefaultsToFull(t *testing.T) {
+	cfg, err := Load(writeConfig(t, minimalHost))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.EffectivePolicy(&cfg.Hosts[0]).Disclosure; got != DisclosureFull {
+		t.Errorf("Disclosure = %q, want %q", got, DisclosureFull)
+	}
+}
+
+func TestValidateRejectsUnknownDisclosure(t *testing.T) {
+	body := "hosts:\n  - name: web\n    auth: {type: key, key_path: /tmp/key}\n    policy: {disclosure: sometimes}\n"
+	_, err := Load(writeConfig(t, body))
+	if err == nil {
+		t.Fatal("expected an error for an unknown disclosure level")
+	}
+	if !strings.Contains(err.Error(), "disclosure") {
+		t.Errorf("error = %v, want it to mention disclosure", err)
+	}
+}
+
+func TestMergeDisclosureAndRedaction(t *testing.T) {
+	base := Spec{Mode: ModeAllow, Disclosure: DisclosureAlias, RedactOutput: true}
+	tests := []struct {
+		name         string
+		over         *Spec
+		wantDisclose string
+		wantRedact   bool
+	}{
+		{"inherits when unset", &Spec{}, DisclosureAlias, true},
+		{"host can tighten to blind", &Spec{Disclosure: DisclosureBlind}, DisclosureBlind, true},
+		{"host can loosen back to full", &Spec{Disclosure: DisclosureFull}, DisclosureFull, true},
+		{"redaction can only be enabled", &Spec{RedactOutput: false}, DisclosureAlias, true},
+		{"redaction can be enabled per host", &Spec{RedactOutput: true}, DisclosureAlias, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Merge(base, tc.over)
+			if got.Disclosure != tc.wantDisclose {
+				t.Errorf("Disclosure = %q, want %q", got.Disclosure, tc.wantDisclose)
+			}
+			if got.RedactOutput != tc.wantRedact {
+				t.Errorf("RedactOutput = %v, want %v", got.RedactOutput, tc.wantRedact)
+			}
+		})
+	}
+}
+
 func TestSelect(t *testing.T) {
 	body := `
 hosts:
