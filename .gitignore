@@ -12,6 +12,10 @@ ssha.yml
 *.pem
 .env
 
+# Python bytecode (the e2e helper scripts)
+__pycache__/
+*.pyc
+
 # Editor / OS
 .idea/
 .vscode/
