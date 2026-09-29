@@ -53,8 +53,14 @@ exec "$HERE/usr/bin/ssha" "$@"
 EOF
 chmod 0755 "$APPDIR/AppRun"
 
-# A .desktop without a version stamp makes some launchers cache a stale icon.
-sed -i "s/^Version=.*/Version=${VERSION}/" "$APPDIR/ssha.desktop"
+# Version= in a desktop file is the version of the *spec*, not of the app, and
+# appimagetool rejects the file outright if it is anything else. The app version
+# goes in X-AppImage-Version, which is what AppImage tooling reads.
+if grep -q '^X-AppImage-Version=' "$APPDIR/ssha.desktop"; then
+  sed -i "s/^X-AppImage-Version=.*/X-AppImage-Version=${VERSION}/" "$APPDIR/ssha.desktop"
+else
+  printf 'X-AppImage-Version=%s\n' "${VERSION}" >> "$APPDIR/ssha.desktop"
+fi
 cp "$APPDIR/ssha.desktop" "$APPDIR/usr/share/applications/ssha.desktop"
 
 mkdir -p "$(dirname "$OUT")"

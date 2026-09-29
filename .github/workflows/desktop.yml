@@ -103,8 +103,12 @@ jobs:
         run: |
           # The C++ toolchain for the WebView2 backend, and windres for the icon.
           choco install mingw --no-progress -y
-          $bin = (Get-ChildItem -Path C:\ProgramData\chocolatey\lib\mingw -Recurse -Filter g++.exe |
-                  Select-Object -First 1).DirectoryName
+          # Chocolatey extracts to ProgramData\mingw64 but does not agree with
+          # itself about which subdirectory, so look rather than assume.
+          $roots = "C:\ProgramData\mingw64", "C:\ProgramData\chocolatey\lib\mingw"
+          $bin = $roots |
+            ForEach-Object { Get-ChildItem -Path $_ -Recurse -Filter g++.exe -ErrorAction SilentlyContinue } |
+            Select-Object -First 1 | ForEach-Object { $_.DirectoryName }
           if (-not $bin) { throw "mingw was installed but g++.exe was not found" }
           echo $bin >> $env:GITHUB_PATH
           & "$bin\g++.exe" --version | Select-Object -First 1

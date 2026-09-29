@@ -11,7 +11,9 @@ Exec=ssha ui
 TryExec=ssha
 Icon=ssha
 Terminal=false
-Categories=Development;System;Security;Network;
+# One main category only: Development, System, Network and Security are all
+# main categories, and listing several makes the app show up several times.
+Categories=Development;
 Keywords=ssh;agent;mcp;audit;secret;
 StartupNotify=true
 StartupWMClass=ssha
