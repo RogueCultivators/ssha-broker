@@ -1297,6 +1297,7 @@ func (a *App) cmdUI(args []string) int {
 	fs := a.newFlagSet("ui")
 	addr := fs.String("addr", "127.0.0.1:8770", "listen address; loopback only")
 	open := fs.Bool("open", false, "open the editor in your browser")
+	tokenFile := fs.String("token-file", "", "keep the access token in this file so a bookmarked URL survives a restart")
 	if code, ok := a.parse(fs, args); !ok {
 		return code
 	}
@@ -1319,7 +1320,13 @@ func (a *App) cmdUI(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	err := ui.Run(ctx, ui.Options{ConfigPath: path, Addr: *addr, Version: a.Version, Open: *open})
+	err := ui.Run(ctx, ui.Options{
+		ConfigPath: path,
+		Addr:       *addr,
+		Version:    a.Version,
+		Open:       *open,
+		TokenFile:  *tokenFile,
+	})
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return a.fail(err)
 	}

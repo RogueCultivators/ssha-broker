@@ -1,0 +1,35 @@
+[Unit]
+Description=ssha config editor (local web UI)
+Documentation=https://github.com/yourorg/ssha
+After=network.target
+
+[Service]
+Type=simple
+User=ssha
+Group=ssha
+# StateDirectory gives /var/lib/ssha the right owner and mode.
+StateDirectory=ssha
+
+# The global --config must come before the subcommand.
+ExecStart=/usr/local/bin/ssha --config /etc/ssha/config.yaml ui --addr 127.0.0.1:8770 --token-file /var/lib/ssha/ui.token
+
+Restart=on-failure
+RestartSec=3
+
+# The point of running this as its own user: the agent on this machine cannot
+# read /etc/ssha, the token or the audit log. See DEPLOY.md.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/ssha
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

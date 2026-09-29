@@ -1,0 +1,26 @@
+[Unit]
+Description=ssha config editor (local web UI, user service)
+Documentation=https://github.com/yourorg/ssha
+After=network.target
+
+[Service]
+Type=simple
+# The global --config must come before the subcommand.
+ExecStart=%h/.local/bin/ssha --config %h/.config/ssha/config.yaml ui --addr 127.0.0.1:8770 --token-file %h/.local/state/ssha/ui.token
+Restart=on-failure
+RestartSec=3
+
+# The editor holds credentials and rewrites the config, so keep it boxed in.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=default.target

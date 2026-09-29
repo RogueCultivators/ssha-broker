@@ -67,6 +67,13 @@ ssha version
 要求 Go 1.25+（依赖 `modelcontextprotocol/go-sdk`）。产物是单个静态二进制，可交叉编译到
 Linux/macOS/Windows。
 
+装好之后想让它常驻（尤其是把配置编辑器开成服务），见 **[DEPLOY.md](DEPLOY.md)**：
+
+```bash
+./packaging/install.sh --user      # 无需 root：~/.local/bin + systemd 用户服务
+sudo ./packaging/install.sh --system   # 专用 ssha 用户 + /usr/local/bin + 系统服务
+```
+
 ## 3. 快速开始
 
 ```bash
@@ -407,7 +414,11 @@ YAML 不适合做「巡检了一遍发现某台机器少配了主机密钥」这
 ssha ui                       # 127.0.0.1:8770，把带 token 的地址打到 stderr
 ssha ui --open                # 顺手打开浏览器
 ssha ui --addr 127.0.0.1:9000
+ssha ui --token-file ~/.local/state/ssha/ui.token   # token 跨重启不变，URL 可收藏
 ```
+
+想让它常驻就别手动跑：`./packaging/install.sh --user` 会装成 systemd 用户服务并打印可收藏的
+地址，`--system` 则是专用用户 + 系统服务（凭证对 agent 不可读）。细节见 [DEPLOY.md](DEPLOY.md)。
 
 它做四件事：
 
@@ -652,7 +663,7 @@ ssha audit ls [--host H] [--app NAME] [--type exec|upload|download] [--decision 
 ssha audit show <id>
 ssha audit verify
 ssha mcp [--http ADDR] [--verbose]
-ssha ui [--addr 127.0.0.1:8770] [--open]
+ssha ui [--addr 127.0.0.1:8770] [--open] [--token-file PATH]
 ssha skill install [--dir DIR] [--force] | ssha skill print
 ssha version
 ```

@@ -653,6 +653,27 @@ out=$("$BIN" -c "$WORK/ui.yaml" ui --addr 0.0.0.0:$(( BASE_PORT + 1 )) 2>&1); co
 check "the editor refuses a non-loopback address" 1 "$code"
 contains "the refusal explains itself" "rewrite the ssha config" "$out"
 
+# A persisted token is what makes a bookmarked URL survive a service restart.
+PERSIST_PORT=$(( BASE_PORT + 4 ))
+TF="$WORK/ui.token"
+"$BIN" -c "$WORK/ui.yaml" ui --addr 127.0.0.1:$PERSIST_PORT --token-file "$TF" >"$WORK/ui2.log" 2>&1 &
+UI2=$!
+for _ in $(seq 1 40); do [ -s "$TF" ] && break; sleep 0.25; done
+first_token=$(cat "$TF" 2>/dev/null)
+[ -n "$first_token" ] && pass "the token file was created" || fail "no token file was written"
+mode=$(stat -c '%a' "$TF" 2>/dev/null)
+[ "$mode" = "600" ] && pass "the token file is 0600" || fail "token file mode is $mode"
+kill $UI2 2>/dev/null; wait $UI2 2>/dev/null
+
+"$BIN" -c "$WORK/ui.yaml" ui --addr 127.0.0.1:$PERSIST_PORT --token-file "$TF" >"$WORK/ui3.log" 2>&1 &
+UI3=$!
+for _ in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$PERSIST_PORT/" && break; sleep 0.25; done
+second_token=$(cat "$TF")
+[ "$first_token" = "$second_token" ] && pass "a persisted token survives a restart" || fail "the token changed: $first_token -> $second_token"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-SSHA-Token: $first_token" "http://127.0.0.1:$PERSIST_PORT/api/state")
+[ "$code" = "200" ] && pass "the bookmarked token still works after the restart" || fail "the old token returned $code"
+kill $UI3 2>/dev/null; wait $UI3 2>/dev/null
+
 # ---------------------------------------------------------------------------
 log "mcp over http"
 "$BIN" mcp --http 127.0.0.1:$(( BASE_PORT + 2 )) >/dev/null 2>&1 &

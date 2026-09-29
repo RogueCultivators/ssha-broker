@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -48,6 +49,10 @@ type Options struct {
 	Version    string
 	// Open tries to launch the operator's browser.
 	Open bool
+	// TokenFile keeps the access token across restarts so a bookmarked URL keeps
+	// working. Without it the token is fresh every run. The file is created with
+	// mode 0600 if it does not exist.
+	TokenFile string
 }
 
 // Run serves the editor until ctx is cancelled.
@@ -60,7 +65,7 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 
-	token, err := newToken()
+	token, err := loadToken(opts.TokenFile)
 	if err != nil {
 		return err
 	}
@@ -128,6 +133,33 @@ func Run(ctx context.Context, opts Options) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// loadToken returns a stable token when a file is configured, creating it on
+// first use, and a fresh one otherwise.
+func loadToken(path string) (string, error) {
+	if path == "" {
+		return newToken()
+	}
+	path = config.ExpandHome(path)
+	if b, err := os.ReadFile(path); err == nil {
+		if t := strings.TrimSpace(string(b)); t != "" {
+			return t, nil
+		}
+	}
+	token, err := newToken()
+	if err != nil {
+		return "", err
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", err
+		}
+	}
+	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("write token file: %w", err)
+	}
+	return token, nil
 }
 
 func newToken() (string, error) {
