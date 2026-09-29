@@ -84,7 +84,7 @@ jobs:
           # And so does the AppImage.
           appimage=$(ls dist/*.AppImage | head -1)
           APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" version
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-packages
           path: |
@@ -141,7 +141,7 @@ jobs:
           Compress-Archive -Path dist/ssha.exe -DestinationPath "dist/ssha-$v-windows-x64.zip"
       - name: smoke test
         run: dist\ssha.exe version
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-package
           path: dist/*-windows-x64.zip
@@ -175,7 +175,7 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent dist/ssha.app "dist/ssha-$v-macos.zip"
           hdiutil create -volname ssha -srcfolder dist/ssha.app -ov -format UDZO \
             "dist/ssha-$v.dmg" || echo "dmg creation failed; the zip is still there"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-package
           path: |
@@ -187,7 +187,7 @@ jobs:
     if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: attach the packages to the release

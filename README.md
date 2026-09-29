@@ -88,7 +88,7 @@ sudo ./packaging/install.sh --system --with-mcp  # 再给 agent 装一个 MCP �
 
 ```bash
 ssha init                     # 生成 ssha.yaml 模板
-ssha ui                       # 或者用本地网页编辑器填（推荐，见 §5）
+ssha ui                       # 或者打开桌面应用填（推荐，见 §5）
 ssha host-key 10.0.0.10       # 扫描并钉住主机密钥（没有 known_hosts 时用）
 ssha hosts list               # 确认能读到主机
 ssha hosts find payment       # 哪台机器跑 payment 相关的东西？
