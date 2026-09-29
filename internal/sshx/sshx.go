@@ -24,6 +24,12 @@ import (
 	"ssha/internal/config"
 )
 
+// PromptFunc supplies a secret that is not available from the environment or
+// a file. host is the configured host name and what describes the secret
+// ("password", "passphrase for ~/.ssh/id_ed25519"). It is nil for the MCP
+// server, which must never block on a terminal.
+type PromptFunc func(host, what string) (string, error)
+
 // Target is a fully resolved connection target.
 type Target struct {
 	Name    string
@@ -34,6 +40,9 @@ type Target struct {
 	Timeout time.Duration
 	// Proxy, when set, is the jump host used to reach Addr.
 	Proxy *Target
+	// Prompt, when set, is consulted for secrets missing from the environment
+	// and from files.
+	Prompt PromptFunc
 }
 
 // Client is a pooled SSH connection to one target.
@@ -42,11 +51,29 @@ type Client struct {
 
 	ssh *ssh.Client
 	// proxy keeps the jump-host connection alive for as long as the tunnel.
-	proxy *ssh.Client
+	proxy   *ssh.Client
+	hostKey ssh.PublicKey
 
 	mu       sync.Mutex
 	sftp     *sftp.Client
 	lastUsed time.Time
+}
+
+// HostKeyFingerprint returns the SHA256 fingerprint of the key the server
+// presented, or an empty string when no handshake has completed yet.
+func (c *Client) HostKeyFingerprint() string {
+	if c == nil || c.hostKey == nil {
+		return ""
+	}
+	return ssh.FingerprintSHA256(c.hostKey)
+}
+
+// HostKeyType returns the negotiated host key algorithm name.
+func (c *Client) HostKeyType() string {
+	if c == nil || c.hostKey == nil {
+		return ""
+	}
+	return c.hostKey.Type()
 }
 
 // RunResult is the outcome of a remote command.
@@ -61,7 +88,8 @@ type RunResult struct {
 
 // Dial establishes a new connection to t.
 func Dial(ctx context.Context, t Target) (*Client, error) {
-	cfg, err := clientConfig(t)
+	var hostKey ssh.PublicKey
+	cfg, err := clientConfig(t, func(k ssh.PublicKey) { hostKey = k })
 	if err != nil {
 		return nil, err
 	}
@@ -98,18 +126,19 @@ func Dial(ctx context.Context, t Target) (*Client, error) {
 		if proxy != nil {
 			proxy.Close()
 		}
-		return nil, fmt.Errorf("ssh handshake with %s: %w", t.Addr, err)
+		return nil, fmt.Errorf("ssh handshake with %s: %w", t.Addr, authHint(err))
 	}
 	return &Client{
 		Name:     t.Name,
 		ssh:      ssh.NewClient(sshConn, chans, reqs),
 		proxy:    proxy,
+		hostKey:  hostKey,
 		lastUsed: time.Now(),
 	}, nil
 }
 
 func dialProxy(ctx context.Context, t Target, dialer *net.Dialer) (*ssh.Client, error) {
-	cfg, err := clientConfig(t)
+	cfg, err := clientConfig(t, nil)
 	if err != nil {
 		return nil, fmt.Errorf("jump host %s: %w", t.Name, err)
 	}
@@ -125,7 +154,7 @@ func dialProxy(ctx context.Context, t Target, dialer *net.Dialer) (*ssh.Client, 
 	return ssh.NewClient(sshConn, chans, reqs), nil
 }
 
-func clientConfig(t Target) (*ssh.ClientConfig, error) {
+func clientConfig(t Target, onHostKey func(ssh.PublicKey)) (*ssh.ClientConfig, error) {
 	methods, err := authMethods(t)
 	if err != nil {
 		return nil, err
@@ -133,6 +162,16 @@ func clientConfig(t Target) (*ssh.ClientConfig, error) {
 	cb, err := hostKeyCallback(t)
 	if err != nil {
 		return nil, err
+	}
+	if onHostKey != nil {
+		verified := cb
+		cb = func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+			if err := verified(hostname, remote, key); err != nil {
+				return err
+			}
+			onHostKey(key)
+			return nil
+		}
 	}
 	user := t.User
 	if user == "" {
@@ -148,6 +187,34 @@ func clientConfig(t Target) (*ssh.ClientConfig, error) {
 		HostKeyCallback: cb,
 		Timeout:         timeout,
 	}, nil
+}
+
+// resolveSecret reads a secret from an environment variable, then a file, then
+// an interactive prompt. A file holds the secret on its first line.
+func resolveSecret(t Target, envVar, file, what string) (string, error) {
+	if envVar != "" {
+		v := os.Getenv(envVar)
+		if v == "" {
+			return "", fmt.Errorf("host %s: environment variable %s is empty", t.Name, envVar)
+		}
+		return v, nil
+	}
+	if file != "" {
+		p := config.ExpandHome(file)
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return "", fmt.Errorf("host %s: read %s: %w", t.Name, p, err)
+		}
+		v := strings.TrimRight(string(b), "\r\n")
+		if v == "" {
+			return "", fmt.Errorf("host %s: %s is empty", t.Name, p)
+		}
+		return v, nil
+	}
+	if t.Prompt != nil {
+		return t.Prompt(t.Name, what)
+	}
+	return "", fmt.Errorf("host %s: no %s source configured; set the matching *_env or *_file field under auth", t.Name, what)
 }
 
 func authMethods(t Target) ([]ssh.AuthMethod, error) {
@@ -170,9 +237,9 @@ func authMethods(t Target) ([]ssh.AuthMethod, error) {
 		ac := agent.NewClient(conn)
 		return []ssh.AuthMethod{ssh.PublicKeysCallback(ac.Signers)}, nil
 	case "password":
-		pw := os.Getenv(t.Auth.PasswordEnv)
-		if pw == "" {
-			return nil, fmt.Errorf("environment variable %s is empty", t.Auth.PasswordEnv)
+		pw, err := resolveSecret(t, t.Auth.PasswordEnv, t.Auth.PasswordFile, "password")
+		if err != nil {
+			return nil, err
 		}
 		return []ssh.AuthMethod{ssh.Password(pw), ssh.KeyboardInteractive(
 			func(_, _ string, questions []string, _ []bool) ([]string, error) {
@@ -188,46 +255,69 @@ func authMethods(t Target) ([]ssh.AuthMethod, error) {
 }
 
 func keySigner(t Target) (ssh.Signer, error) {
-	var pem []byte
-	var err error
-	source := ""
-	switch {
-	case t.Auth.KeyEnv != "":
-		pem = []byte(os.Getenv(t.Auth.KeyEnv))
-		source = "environment variable " + t.Auth.KeyEnv
-		if len(pem) == 0 {
-			return nil, fmt.Errorf("environment variable %s is empty", t.Auth.KeyEnv)
-		}
-	default:
-		p := config.ExpandHome(t.Auth.KeyPath)
-		pem, err = os.ReadFile(p)
-		source = p
-		if err != nil {
-			return nil, fmt.Errorf("read private key %s: %w", p, err)
-		}
+	pem, source, err := privateKeyPEM(t)
+	if err != nil {
+		return nil, err
 	}
 
-	if t.Auth.PassphraseEnv != "" {
-		pass := os.Getenv(t.Auth.PassphraseEnv)
-		if pass == "" {
-			return nil, fmt.Errorf("environment variable %s is empty", t.Auth.PassphraseEnv)
-		}
-		signer, err := ssh.ParsePrivateKeyWithPassphrase(pem, []byte(pass))
-		if err != nil {
-			return nil, fmt.Errorf("parse private key from %s: %w", source, err)
-		}
+	// Most keys are unencrypted, so only ask for a passphrase when the key
+	// actually demands one.
+	signer, err := ssh.ParsePrivateKey(pem)
+	if err == nil {
 		return signer, nil
 	}
-
-	signer, err := ssh.ParsePrivateKey(pem)
-	if err != nil {
-		var pm *ssh.PassphraseMissingError
-		if errors.As(err, &pm) {
-			return nil, fmt.Errorf("private key %s is encrypted; set auth.passphrase_env", source)
-		}
+	var pm *ssh.PassphraseMissingError
+	if !errors.As(err, &pm) {
 		return nil, fmt.Errorf("parse private key from %s: %w", source, err)
 	}
+
+	pass, err := resolveSecret(t, t.Auth.PassphraseEnv, t.Auth.PassphraseFile, "passphrase for "+source)
+	if err != nil {
+		return nil, err
+	}
+	signer, err = ssh.ParsePrivateKeyWithPassphrase(pem, []byte(pass))
+	if err != nil {
+		return nil, fmt.Errorf("decrypt private key %s: %w", source, err)
+	}
 	return signer, nil
+}
+
+func privateKeyPEM(t Target) (pem []byte, source string, err error) {
+	if t.Auth.KeyEnv != "" {
+		v := os.Getenv(t.Auth.KeyEnv)
+		if v == "" {
+			return nil, "", fmt.Errorf("host %s: environment variable %s is empty", t.Name, t.Auth.KeyEnv)
+		}
+		return []byte(v), "environment variable " + t.Auth.KeyEnv, nil
+	}
+	p := config.ExpandHome(t.Auth.KeyPath)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil, p, fmt.Errorf("read private key %s: %w", p, err)
+	}
+	return b, p, nil
+}
+
+// authHint adds operator guidance to the terse errors the ssh client returns
+// when authentication fails. "unexpected message type 51 (expected 60)", for
+// instance, only means that the server refused keyboard-interactive outright.
+func authHint(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	var hint string
+	switch {
+	case strings.Contains(msg, "expected 60"):
+		hint = "keyboard-interactive was refused: the password is probably wrong"
+	case strings.Contains(msg, "unable to authenticate"), strings.Contains(msg, "no supported methods remain"):
+		hint = "the server rejected every credential offered; check the auth block for this host"
+	case strings.Contains(msg, "no auth passed"):
+		hint = "no credentials were configured; check the auth block for this host"
+	default:
+		return err
+	}
+	return fmt.Errorf("%s: %s", msg, hint)
 }
 
 func hostKeyCallback(t Target) (ssh.HostKeyCallback, error) {

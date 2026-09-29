@@ -37,7 +37,10 @@ Rules and behavior:
 - timeouts and output limits can only be shortened by your request, never extended.
 - Every call, including denied ones, is written to a tamper-evident audit log and returns an audit_id.
 - A non-zero exit_code is a normal result, not an error. Read stderr.
-- When a result says "denied", do not retry the same command; choose an allowed approach or stop and report.`
+- When a result says "denied", do not retry the same command; choose an allowed approach or stop and report.
+- Credentials live on the ssha server and are never sent to you. If a host reports a missing
+  password source or a host key mismatch, report it to the user; do not attempt to change the
+  ssha configuration or the ssh known_hosts file yourself.`
 
 // New builds an MCP server bound to a backend.
 func New(be Backend, name, version string) *mcp.Server {

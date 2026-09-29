@@ -5,8 +5,10 @@
 # from environment variables), but keep it readable only by the user who runs
 # `ssha`. It is gitignored by default; commit it only if your team agrees.
 #
-# Inspect what a host allows with:  ssha hosts show <name>
-# Test a command without running it: ssha policy check <name> -- <command>
+#  Inspect what a host allows with:  ssha hosts show <name>
+#  Test a host end to end with:      ssha hosts test <name>
+#  Pin a host key you do not have:   ssha host-key <addr> --write
+#  Test a command without running it: ssha policy check <name> -- <command>
 
 version: 1
 
@@ -74,7 +76,12 @@ hosts:
     auth:
       type: key
       key_path: ~/.ssh/id_ed25519
+      # An encrypted key: give the passphrase a source (env wins, then file,
+      # then an interactive prompt from the CLI).
       # passphrase_env: SSHA_KEY_PASSPHRASE
+      # passphrase_file: ~/.config/ssha/id_ed25519.pass
+      # In CI you may prefer to keep no key on disk at all:
+      # key_env: SSHA_PRIVATE_KEY
     host_key:
       known_hosts: ~/.ssh/known_hosts
       # fingerprints: ["SHA256:abc123..."]   # alternative to known_hosts
@@ -136,7 +143,9 @@ hosts:
     policy:
       mode: deny           # agents must not run commands on the bastion itself
 
-  # A host that authenticates with a password taken from the environment.
+  # A host that authenticates with a password. The password never belongs in
+  # this file. Prefer password_file for anything an agent will reach over MCP,
+  # because MCP clients start ssha with their own environment.
   - name: legacy-db
     description: Legacy database host, password auth.
     addr: 10.0.0.30
@@ -144,7 +153,11 @@ hosts:
     tags: [db]
     auth:
       type: password
-      password_env: SSHA_LEGACY_DB_PASSWORD
+      # password_file: ~/.config/ssha/legacy-db.pass   # one line, mode 0600
+      # password_env: SSHA_LEGACY_DB_PASSWORD         # takes precedence
+      #
+      # With neither set, the CLI prompts for the password when stdin is a
+      # terminal. The MCP server never prompts and reports an error instead.
     host_key:
       insecure: true       # TODO: pin the fingerprint instead
     policy:

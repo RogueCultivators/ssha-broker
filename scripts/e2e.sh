@@ -59,8 +59,12 @@ RUN apk add --no-cache openssh bash coreutils grep procps && ssh-keygen -A
 RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh
 COPY authorized_keys /root/.ssh/authorized_keys
 RUN chmod 600 /root/.ssh/authorized_keys
+# Password auth is enabled too, so the password paths can be tested.
+RUN echo 'root:e2e-secret' | chpasswd
 EXPOSE 22
-CMD ["/usr/sbin/sshd", "-D", "-e", "-o", "PermitRootLogin=yes", "-o", "PasswordAuthentication=no"]
+CMD ["/usr/sbin/sshd", "-D", "-e", \
+     "-o", "PermitRootLogin=yes", \
+     "-o", "PasswordAuthentication=yes"]
 EOF
 docker build -q -t "$IMAGE" "$WORK/image" >/dev/null || exit 1
 docker run -d --name "$CONTAINER" -p "127.0.0.1:$PORT:22" "$IMAGE" >/dev/null || exit 1
@@ -117,7 +121,27 @@ hosts:
     work_dir: /tmp
     policy:
       mode: allow
+  - name: testbox-pw
+    description: password auth from an environment variable
+    addr: 127.0.0.1
+    port: $PORT
+    user: root
+    tags: [auth]
+    auth: {type: password, password_env: SSHA_E2E_PASSWORD}
+    host_key: {known_hosts: $WORK/known_hosts}
+    policy: {mode: allow}
+  - name: testbox-pwfile
+    description: password auth from a file
+    addr: 127.0.0.1
+    port: $PORT
+    user: root
+    tags: [auth]
+    auth: {type: password, password_file: $WORK/password.txt}
+    host_key: {known_hosts: $WORK/known_hosts}
+    policy: {mode: allow}
 EOF
+printf 'e2e-secret\n' > "$WORK/password.txt"
+chmod 600 "$WORK/password.txt"
 export SSHA_CONFIG="$WORK/ssha.yaml"
 
 # ---------------------------------------------------------------------------
@@ -129,6 +153,94 @@ if printf '%s' "$out" | grep -q "  testbox  "; then fail "tag filter leaked test
 "$BIN" policy check testbox -- ls >/dev/null; check "policy allows ls on readonly host" 0 $?
 "$BIN" policy check testbox -- 'curl http://example.com' >/dev/null; check "policy denies curl on readonly host" 77 $?
 "$BIN" policy check testbox-rw -- 'mkdir -p /tmp/x' >/dev/null; check "policy allows mkdir on rw host" 0 $?
+
+# ---------------------------------------------------------------------------
+log "cli: auth methods"
+export SSHA_E2E_PASSWORD="e2e-secret"
+
+out=$("$BIN" hosts test testbox --json); check "key auth self-test" 0 $?
+contains "self-test reports the host key fingerprint" 'SHA256:' "$out"
+contains "self-test reports the policy mode" '"policy_mode": "readonly"' "$out"
+
+out=$("$BIN" hosts test testbox); check "key auth self-test renders a table" 0 $?
+contains "the self-test table shows the host" "testbox" "$out"
+
+out=$("$BIN" hosts test testbox-pw); check "password from an environment variable" 0 $?
+out=$("$BIN" hosts test testbox-pwfile); check "password from a file" 0 $?
+
+# Selecting hosts without naming them
+out=$("$BIN" hosts test --tag auth 2>&1); check "hosts test --tag" 0 $?
+contains "hosts test --tag covers both password hosts" "testbox-pwfile" "$out"
+
+# Without a source and without a terminal, this must fail fast, never hang.
+unset SSHA_E2E_PASSWORD
+out=$(SSHA_E2E_PASSWORD= "$BIN" hosts test testbox-pw --no-prompt 2>&1); code=$?
+check "a missing password source fails instead of hanging" 1 "$code"
+contains "the failure names the missing env var" "SSHA_E2E_PASSWORD" "$out"
+contains "the failure names the host" "testbox-pw" "$out"
+export SSHA_E2E_PASSWORD="e2e-secret"
+
+out=$("$BIN" hosts test --all --json); check "hosts test --all" 0 $?
+contains "self-test json carries the fingerprint" '"host_key_fingerprint"' "$out"
+contains "self-test json carries the latency" '"latency_ms"' "$out"
+
+# A wrong password fails with the server's rejection, not with a hang.
+out=$(SSHA_E2E_PASSWORD=wrong "$BIN" hosts test testbox-pw --no-prompt 2>&1); code=$?
+check "a wrong password is reported as a failure" 1 "$code"
+contains "the wrong-password failure points at the password" "password is probably wrong" "$out"
+
+# ---------------------------------------------------------------------------
+log "cli: host-key onboarding"
+SCANNED="$WORK/scanned_known_hosts"
+
+out=$("$BIN" host-key 127.0.0.1:"$PORT" --known-hosts "$SCANNED" 2>&1); check "host-key scans an address" 0 $?
+contains "host-key lists the ed25519 key" "ssh-ed25519" "$out"
+contains "host-key prints a fingerprint" "SHA256:" "$out"
+contains "host-key brackets a non-default port" "[127.0.0.1]:$PORT" "$out"
+if [ -f "$SCANNED" ]; then fail "host-key wrote the file without --write"; else pass "host-key does not write without --write"; fi
+
+out=$("$BIN" host-key 127.0.0.1:"$PORT" --known-hosts "$SCANNED" --write); check "host-key --write" 0 $?
+[ -s "$SCANNED" ] && pass "known_hosts was written" || fail "known_hosts is empty"
+
+again=$("$BIN" host-key 127.0.0.1:"$PORT" --known-hosts "$SCANNED" --write --json \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["added"])')
+[ "$again" = "0" ] && pass "host-key --write is idempotent" || fail "second --write added $again lines"
+
+out=$("$BIN" host-key testbox 2>&1); check "host-key accepts a configured host name" 0 $?
+
+# The scanned file must actually work on a real connection.
+cat > "$WORK/scanned.yaml" <<EOF
+version: 1
+audit: {path: $WORK/audit.jsonl}
+hosts:
+  - name: scanned
+    addr: 127.0.0.1
+    port: $PORT
+    user: root
+    auth: {type: key, key_path: $WORK/id_ed25519}
+    host_key: {known_hosts: $SCANNED}
+    policy: {mode: allow}
+EOF
+out=$("$BIN" -c "$WORK/scanned.yaml" run scanned -- uname -s); check "a scanned known_hosts works for real" 0 $?
+contains "the scanned connection returned output" "Linux" "$out"
+
+# A pinned fingerprint that does not match must be rejected, with both shown.
+cat > "$WORK/wrongfp.yaml" <<EOF
+version: 1
+audit: {path: $WORK/audit.jsonl}
+hosts:
+  - name: wpinned
+    addr: 127.0.0.1
+    port: $PORT
+    user: root
+    auth: {type: key, key_path: $WORK/id_ed25519}
+    host_key: {fingerprints: ["SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]}
+    policy: {mode: allow}
+EOF
+out=$("$BIN" -c "$WORK/wrongfp.yaml" run wpinned -- uname -s 2>&1); code=$?
+check "a wrong pinned fingerprint is rejected" 1 "$code"
+contains "the rejection quotes the fingerprint the server offered" "SHA256:" "$out"
+contains "the rejection says it is not configured" "not in the configured fingerprints" "$out"
 
 # ---------------------------------------------------------------------------
 log "cli: run"

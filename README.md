@@ -69,8 +69,10 @@ Linux/macOS/Windows。
 ```bash
 ssha init                     # 生成 ssha.yaml 模板
 $EDITOR ssha.yaml             # 填 hosts
+ssha host-key 10.0.0.10       # 扫描并钉住主机密钥（没有 known_hosts 时用）
 ssha hosts list               # 确认能读到主机
 ssha hosts show prod-web      # 看这一台机器到底允许什么
+ssha hosts test prod-web      # 自检：主机密钥 + 认证 + 能否执行命令
 ssha policy check prod-web -- systemctl restart nginx   # 空跑，不执行不审计
 ssha run prod-web -- systemctl status nginx
 ssha run prod-web --json -- uname -r
@@ -116,7 +118,7 @@ hosts:
 ```
 
 - `type: agent` 走本地 `SSH_AUTH_SOCK`，磁盘上不放私钥。
-- `type: password` 从 `password_env` 指向的环境变量读取，配置文件里不留密码。
+- `type: password` 从环境变量或文件读密码，配置文件里不留密码。
 - 主机密钥默认 **fail-closed**：没有 known_hosts 或指纹就拒绝连接，并给出可执行的报错
   （会把服务器实际提供的指纹和 known_hosts 里的都打印出来）。
 - `proxy_jump` 支持一层跳板机，跳板机自身也可以有独立策略（通常设成 `deny`）。
@@ -206,6 +208,105 @@ server:
 
 ---
 
+### 4.5 添加一台机器（含「不允许免密」的情况）
+
+#### 第 0 步（必做）：先把主机密钥钉住
+
+ssha 默认 fail-closed，没有 known_hosts 或指纹就不连。第一次接入用：
+
+```bash
+ssha host-key 10.0.0.10            # 扫描并打印指纹 + known_hosts 行
+ssha host-key 10.0.0.10 --write    # 追加进 ~/.ssh/known_hosts（已存在则不重复写）
+ssha host-key prod-web             # 也可以直接传配置里的 host 名
+```
+
+`--write` 遇到「同一个主机 + 同一种密钥类型但指纹不同」时会**拒绝写入并告警**——那是中间人
+攻击或服务器重建的典型信号，应该人工核对，而不是自动覆盖。也可以不用 known_hosts，直接在配置里
+钉指纹：`host_key: {fingerprints: ["SHA256:xxxx"]}`。扫描完用 `ssha hosts test <name>` 验证。
+
+#### 情况 A：有私钥、允许免密登录
+
+```yaml
+    auth:
+      type: key
+      key_path: ~/.ssh/id_ed25519
+```
+
+私钥有口令时，按优先级补一个来源（环境变量 → 文件 → CLI 交互输入）：
+
+```yaml
+      passphrase_env: SSHA_KEY_PASSPHRASE
+      # 或 passphrase_file: ~/.config/ssha/id_ed25519.pass
+```
+
+CI 里不想落盘私钥，就用 `key_env: SSHA_PRIVATE_KEY`（值直接是 PEM 内容）。
+
+#### 情况 B：只能密码登录，且不想把密码放进环境变量
+
+用 `password_file`。文件只有一行，建议权限 0600：
+
+```bash
+install -m 600 /dev/null ~/.config/ssha/prod.pass
+printf '%s\n' 'the-password' > ~/.config/ssha/prod.pass   # 或 read -rs 后写入
+```
+
+```yaml
+    auth:
+      type: password
+      password_file: ~/.config/ssha/prod.pass
+      # password_env: SSHA_PROD_PASSWORD      # 环境变量优先级更高
+```
+
+> 为什么不用环境变量？因为 **MCP 客户端是用它自己的环境启动 `ssha mcp` 的**，不会继承你 shell 里
+> `export` 的变量。在 Codex / Claude Code 的 MCP 配置里加 `env` 也能工作，但每个客户端语法不同；
+> 用 `password_file` 一次配置、所有客户端通用。
+
+#### 情况 C：只能密码登录，且连文件都不方便留
+
+CLI 会**交互式询问**（密码不回显），不落盘：
+
+```bash
+ssha run legacy-db -- uptime
+# ssha: password for legacy-db: ........
+```
+
+配置里 `auth` 只写类型即可，不写任何来源：
+
+```yaml
+    auth:
+      type: password
+```
+
+仅当 **stdin 是终端** 时才提示。注意这条边界：
+
+- `--no-prompt` 或非交互环境（cron、CI、管道）会直接报错，**不会挂住**。
+- **MCP 模式永远不提示**。所以如果你要让 agent 通过 MCP 访问这台机器，必须给一个来源
+  （`password_file` 或 `password_env`），否则工具会返回一个说明清楚的错误。
+- 密码只存在内存里那一次连接中，不写审计、不进日志。
+
+#### 情况 D：用本地 ssh-agent，不落地任何私钥
+
+```yaml
+    auth:
+      type: agent          # 读 SSH_AUTH_SOCK
+```
+
+#### 通用：随时自检
+
+```bash
+ssha hosts test legacy-db        # 主机密钥 + 认证 + 执行一条 true
+ssha hosts test --tag prod       # 批量自检
+ssha hosts test --all --json
+```
+
+输出会告诉你用的是哪种认证、协商到的**主机密钥指纹**、往返延迟，失败时给出原因，例如：
+
+```
+HOST        RESULT  AUTH      VIA  HOST KEY                                   LATENCY  DETAIL
+testbox     ok      key       -    SHA256:Pp9s7QXv... (ecdsa-sha2-nistp256)   105ms    -
+legacy-db   FAIL    password  -    -                                          47ms    ... the password is probably wrong
+```
+
 ## 5. 接入各种 agent
 
 ### 5.1 MCP（Codex / Claude Code / Cursor）
@@ -291,6 +392,7 @@ cp extensions/pi/ssha-agent.ts ~/.pi/agent/extensions/
 **保护的是什么**
 
 1. **凭证不出 broker**：agent 只传主机名，私钥/密码/口令都留在 broker 进程可达的地方。
+   密码可以来自 0600 文件而不是环境变量，避免泄漏到子进程环境与 `ps` 输出。
 2. **策略前置**：`ssh_exec`/`upload`/`download` 都在建立连接*之前*做策略判定，拒绝的
    请求不会触达目标机，但依然写审计（`decision: denied` + 原因）。
 3. **审计不可静默篡改**：哈希链 + `audit verify`。sha256 链只保证「可检测」，不保证
@@ -319,6 +421,8 @@ cp extensions/pi/ssha-agent.ts ~/.pi/agent/extensions/
 ssha init [--out ssha.yaml] [--force]
 ssha hosts [list] [--tag T] [--name GLOB] [--all]
 ssha hosts show <name>
+ssha hosts test <name>... | --tag T | --all [--probe CMD] [--json]
+ssha host-key <name|addr>[:port] [--port N] [--known-hosts PATH] [--write] [--timeout 10s] [--json]
 ssha run <host> [--cwd DIR] [-e K=V] [--timeout 30s] [--max-output N] [--dry-run] [--json] [--] <cmd>
 ssha multi [--host H]... [--tag T]... [--concurrency N] [--] <cmd>
 ssha upload <host> <local|-> <remote> [--mode 0644]
@@ -334,6 +438,7 @@ ssha version
 
 所有命令都支持 `--json`；flag 可以放在主机名前面或后面（`ssha run web-1 --cwd /etc -- ls`
 和 `ssha run --cwd /etc web-1 -- ls` 等价），`--` 之后一律原样作为远端命令。
+全局 `--no-prompt` 关闭交互式密码询问（默认在 stdin 是终端时开启）。
 
 ---
 

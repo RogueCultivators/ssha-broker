@@ -30,6 +30,8 @@ Commands:
   init                     write a starter config file
   hosts [list]             list configured hosts
   hosts show <name>        show one host's details
+  hosts test <name>...     verify host key, credentials and command execution
+  host-key <host|addr>     fetch a host's public keys (onboarding aid)
   run <host> [--] <cmd>    run a command on one host
   multi [--tag T] <cmd>    run a command on several hosts in parallel
   upload <host> <src> <dst>   upload a file (src "-" reads stdin)
@@ -46,6 +48,7 @@ Commands:
 Global flags (before the command):
   -c, --config PATH   config file (default: $SSHA_CONFIG, ./ssha.yaml, ~/.config/ssha/config.yaml)
       --json          machine-readable output
+      --no-prompt     never ask for a password or passphrase interactively
   -h, --help          show help
 
 Exit codes:
@@ -56,6 +59,7 @@ Exit codes:
 type App struct {
 	ConfigPath string
 	JSON       bool
+	NoPrompt   bool
 	Version    string
 	Stdout     io.Writer
 	Stderr     io.Writer
@@ -70,6 +74,7 @@ func Run(args []string, version string) int {
 	global.StringVar(&a.ConfigPath, "config", "", "")
 	global.StringVar(&a.ConfigPath, "c", "", "")
 	global.BoolVar(&a.JSON, "json", false, "")
+	global.BoolVar(&a.NoPrompt, "no-prompt", false, "")
 	help := global.Bool("help", false, "")
 	global.BoolVar(help, "h", false, "")
 
@@ -97,6 +102,8 @@ func Run(args []string, version string) int {
 		return a.cmdInit(sub)
 	case "hosts":
 		return a.cmdHosts(sub)
+	case "host-key", "hostkey":
+		return a.cmdHostKey(sub)
 	case "run":
 		return a.cmdRun(sub)
 	case "multi":
@@ -135,9 +142,9 @@ func (a *App) fail(err error) int {
 	return ExitFail
 }
 
-// open loads the broker, honouring --config.
+// open loads the broker, honouring --config and interactive prompting.
 func (a *App) open() (*broker.Broker, error) {
-	b, err := broker.OpenDefault(a.ConfigPath)
+	b, err := broker.OpenDefaultWithOptions(a.ConfigPath, broker.Options{Prompt: a.promptFunc()})
 	if err != nil {
 		if errors.Is(err, broker.ErrNoConfig) {
 			return nil, fmt.Errorf("%w\n\nCreate one with `ssha init` or pass --config PATH", err)
@@ -170,6 +177,7 @@ func (a *App) newFlagSet(name string) *flag.FlagSet {
 	fs.StringVar(&a.ConfigPath, "config", a.ConfigPath, "")
 	fs.StringVar(&a.ConfigPath, "c", a.ConfigPath, "")
 	fs.BoolVar(&a.JSON, "json", a.JSON, "")
+	fs.BoolVar(&a.NoPrompt, "no-prompt", a.NoPrompt, "")
 	return fs
 }
 
@@ -179,15 +187,6 @@ func (a *App) parse(fs *flag.FlagSet, args []string) (int, bool) {
 		return a.usageErr(err.Error()), false
 	}
 	return 0, true
-}
-
-// trimmedArgs returns the positional args with a leading "--" removed.
-func trimmedArgs(fs *flag.FlagSet) []string {
-	args := fs.Args()
-	if len(args) > 0 && args[0] == "--" {
-		args = args[1:]
-	}
-	return args
 }
 
 // splitHost parses args where flags may appear both before and after a single
@@ -208,7 +207,8 @@ func splitHost(fs *flag.FlagSet, args []string) (host string, tail []string, err
 	return host, fs.Args(), nil
 }
 
-// positionals parses flags interspersed with up to n positional arguments.
+// positionals parses flags interspersed with positional arguments, accepting
+// at most n of them (n <= 0 means unlimited).
 func positionals(fs *flag.FlagSet, args []string, n int) ([]string, error) {
 	var pos []string
 	remaining := args
@@ -220,7 +220,7 @@ func positionals(fs *flag.FlagSet, args []string, n int) ([]string, error) {
 		if len(got) == 0 {
 			break
 		}
-		if len(pos) >= n {
+		if n > 0 && len(pos) >= n {
 			return nil, fmt.Errorf("unexpected extra argument %q", got[0])
 		}
 		pos = append(pos, got[0])

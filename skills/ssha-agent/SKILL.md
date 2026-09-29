@@ -29,20 +29,29 @@ or denied, is appended to a hash-chained audit log and returns an `audit_id`.
    ssha hosts list --tag prod
    ```
 
-2. Inspect a host when the policy matters (this shows the allow/deny rules):
+2. If a host is newly configured or something fails, self-test it. This checks the
+   host key, the credentials and command execution in one call, and reports the
+   host key fingerprint:
+
+   ```bash
+   ssha hosts test web-1
+   ssha hosts test --tag prod
+   ```
+
+3. Inspect a host when the policy matters (this shows the allow/deny rules):
 
    ```bash
    ssha hosts show web-1
    ```
 
-3. Dry-run a command when you are unsure it is permitted. This executes nothing
+4. Dry-run a command when you are unsure it is permitted. This executes nothing
    and writes no audit entry:
 
    ```bash
    ssha policy check web-1 -- systemctl restart nginx
    ```
 
-4. Run the command. Always put `--` between the host and the remote command so
+5. Run the command. Always put `--` between the host and the remote command so
    the remote flags are not parsed locally:
 
    ```bash
@@ -51,14 +60,14 @@ or denied, is appended to a hash-chained audit log and returns an `audit_id`.
    ssha run web-1 -e APP_ENV=staging -- env
    ```
 
-5. Touch a fleet in one call:
+6. Touch a fleet in one call:
 
    ```bash
    ssha multi --tag prod -- uptime
    ssha multi --host web-1 --host web-2 -- df -h
    ```
 
-6. Move files:
+7. Move files:
 
    ```bash
    ssha upload web-1 ./local.conf /etc/app/app.conf --mode 0644
@@ -113,6 +122,23 @@ ssha run web-1 --json -- systemctl is-active nginx
   `--max-output 65536`); the host policy sets the ceiling.
 - When you report back, include the host and the `audit_id` of anything you
   changed, so the user can find it with `ssha audit show <id>`.
+- Never create, edit or delete an ssh key, a `known_hosts` file, or the ssha
+  config to work around a failure. Fix the config through the user, not by
+  weakening it. `ssha host-key <addr> --write` is the only sanctioned way to
+  pin a new host key, and it refuses to overwrite a conflicting one.
+
+## When a connection fails
+
+- `no password source configured` / `environment variable X is empty`: the
+  password lives outside ssha. Do not guess or hardcode it. Tell the user to
+  set `password_env`/`password_file` for that host, or to run the command
+  themselves in a terminal so ssha can prompt. ssha never prompts over MCP.
+- `host key mismatch` / `unknown host key`: the server's key is not pinned. Do
+  not disable verification. Report the fingerprints and let the user decide,
+  then suggest `ssha host-key <host> --write`.
+- `keyboard-interactive was refused: the password is probably wrong` or
+  `the server rejected every credential offered`: the credentials are wrong.
+  Stop and report; do not retry with variations.
 
 ## Reviewing what happened
 

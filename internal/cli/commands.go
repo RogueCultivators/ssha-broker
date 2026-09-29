@@ -8,17 +8,24 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/term"
+
 	"ssha/internal/audit"
 	"ssha/internal/broker"
+	"ssha/internal/config"
 	"ssha/internal/mcpsrv"
+	"ssha/internal/sshx"
 	"ssha/skills"
 )
 
@@ -33,6 +40,27 @@ func (m *multiFlag) String() string { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error {
 	*m = append(*m, v)
 	return nil
+}
+
+// promptFunc returns a secret prompt, or nil when prompting is disabled or
+// stdin is not a terminal. The MCP server never installs one, so a headless
+// agent can never block waiting for a password.
+func (a *App) promptFunc() sshx.PromptFunc {
+	if a.NoPrompt || !term.IsTerminal(int(os.Stdin.Fd())) {
+		return nil
+	}
+	return func(host, what string) (string, error) {
+		fmt.Fprintf(a.Stderr, "ssha: %s for %s: ", what, host)
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(a.Stderr)
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", what, err)
+		}
+		if len(b) == 0 {
+			return "", fmt.Errorf("no %s entered", what)
+		}
+		return string(b), nil
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -66,20 +94,21 @@ func (a *App) cmdInit(args []string) int {
 
 func (a *App) cmdHosts(args []string) int {
 	sub := "list"
-	if len(args) > 0 && (args[0] == "list" || args[0] == "show") {
+	if len(args) > 0 && (args[0] == "list" || args[0] == "show" || args[0] == "test") {
 		sub = args[0]
 		args = args[1:]
 	}
 
 	fs := a.newFlagSet("hosts")
 	var tags, names multiFlag
-	all := fs.Bool("all", false, "include disabled hosts")
+	all := fs.Bool("all", false, "include disabled hosts, or test every enabled host")
+	probe := fs.String("probe", "", "command used by `hosts test` (default: true)")
 	fs.Var(&tags, "tag", "filter by tag (repeatable)")
 	fs.Var(&names, "name", "filter by name glob (repeatable)")
-	if code, ok := a.parse(fs, args); !ok {
-		return code
+	rest, perr := positionals(fs, args, 0)
+	if perr != nil {
+		return a.usageErr(perr.Error())
 	}
-	rest := trimmedArgs(fs)
 
 	b, err := a.open()
 	if err != nil {
@@ -98,6 +127,8 @@ func (a *App) cmdHosts(args []string) int {
 		}
 		a.emit(info, func() string { return renderHostDetail(info) })
 		return ExitOK
+	case "test":
+		return a.runHostTests(b, rest, tags, names, *all, *probe)
 	default:
 		hosts := b.Hosts(tags, names, *all)
 		a.emit(map[string]any{"hosts": hosts, "count": len(hosts)}, func() string {
@@ -105,6 +136,70 @@ func (a *App) cmdHosts(args []string) int {
 		})
 		return ExitOK
 	}
+}
+
+func (a *App) runHostTests(b *broker.Broker, positional, tags, globs []string, all bool, probe string) int {
+	var targets []string
+	switch {
+	case len(positional) > 0:
+		targets = positional
+	case all || len(tags) > 0 || len(globs) > 0:
+		for _, h := range b.Hosts(tags, globs, false) {
+			targets = append(targets, h.Name)
+		}
+	default:
+		return a.usageErr("usage: ssha hosts test <name>... | --tag T | --all")
+	}
+	if len(targets) == 0 {
+		return a.fail(errors.New("no hosts matched"))
+	}
+
+	ctx := context.Background()
+	results := make([]*broker.HostTest, 0, len(targets))
+	failed := 0
+	for _, name := range targets {
+		res := b.Test(ctx, name, probe)
+		if !res.OK {
+			failed++
+		}
+		results = append(results, res)
+	}
+
+	a.emit(map[string]any{"results": results, "count": len(results), "failed": failed}, func() string {
+		return renderHostTests(results)
+	})
+	if failed > 0 {
+		return ExitFail
+	}
+	return ExitOK
+}
+
+func renderHostTests(results []*broker.HostTest) string {
+	var sb strings.Builder
+	tw := tabwriter.NewWriter(&sb, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "HOST\tRESULT\tAUTH\tVIA\tHOST KEY\tLATENCY\tDETAIL")
+	for _, r := range results {
+		result := "ok"
+		if !r.OK {
+			result = "FAIL"
+		}
+		hostKey := "-"
+		if r.HostKeyFingerprint != "" {
+			hostKey = fmt.Sprintf("%s (%s)", r.HostKeyFingerprint, r.HostKeyType)
+		}
+		via := r.Via
+		if via == "" {
+			via = "-"
+		}
+		detail := r.Error
+		if r.OK {
+			detail = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%dms\t%s\n",
+			r.Host, result, r.Auth, via, hostKey, r.LatencyMS, detail)
+	}
+	tw.Flush()
+	return sb.String()
 }
 
 func renderHostTable(hosts []broker.HostInfo) string {
@@ -151,6 +246,225 @@ func renderHostDetail(h broker.HostInfo) string {
 	}
 	tw.Flush()
 	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// host-key
+// ---------------------------------------------------------------------------
+
+// hostKeyInfo is one scanned public host key.
+type hostKeyInfo struct {
+	Type        string `json:"type"`
+	Fingerprint string `json:"fingerprint"`
+	Line        string `json:"known_hosts_line"`
+}
+
+// cmdHostKey fetches a server's public host keys so the first connection can be
+// pinned instead of trusted blindly.
+func (a *App) cmdHostKey(args []string) int {
+	fs := a.newFlagSet("host-key")
+	port := fs.Int("port", 0, "SSH port, when the argument is not a configured host name")
+	write := fs.Bool("write", false, "append the keys to the known_hosts file")
+	knownHosts := fs.String("known-hosts", "", "known_hosts file to consider (default: from the host config, else ~/.ssh/known_hosts)")
+	timeout := fs.Duration("timeout", 10*time.Second, "connection timeout")
+	rest, perr := positionals(fs, args, 1)
+	if perr != nil {
+		return a.usageErr(perr.Error())
+	}
+	if len(rest) != 1 {
+		return a.usageErr("usage: ssha host-key <name|addr>[:port] [--write] [--known-hosts PATH]")
+	}
+	spec := rest[0]
+
+	// A configured host name supplies the address and the known_hosts location.
+	addr := ""
+	khPath := ""
+	if b, err := a.open(); err == nil {
+		if h, err := b.Config().Host(spec); err == nil {
+			addr = h.AddrPort()
+			khPath = h.HostKey.KnownHosts
+		}
+		b.Close()
+	}
+	if addr == "" {
+		defaultPort := *port
+		if defaultPort == 0 {
+			defaultPort = 22
+		}
+		host, p, err := parseHostPort(spec, defaultPort)
+		if err != nil {
+			return a.usageErr(err.Error())
+		}
+		addr = net.JoinHostPort(host, strconv.Itoa(p))
+	}
+	if *knownHosts != "" {
+		khPath = *knownHosts
+	}
+	if khPath == "" {
+		khPath = config.DefaultKnownHosts()
+	}
+	khPath = config.ExpandHome(khPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout+2*time.Second)
+	defer cancel()
+	keys, err := sshx.ScanHostKeys(ctx, addr, *timeout)
+	if err != nil {
+		return a.fail(fmt.Errorf("scan %s: %w", addr, err))
+	}
+
+	infos := make([]hostKeyInfo, 0, len(keys))
+	lines := make([]string, 0, len(keys))
+	for _, k := range keys {
+		line := sshx.KnownHostsLine(addr, k)
+		infos = append(infos, hostKeyInfo{Type: k.Type(), Fingerprint: ssh.FingerprintSHA256(k), Line: line})
+		lines = append(lines, line)
+	}
+
+	result := map[string]any{
+		"address":     addr,
+		"known_hosts": khPath,
+		"keys":        infos,
+		"written":     false,
+	}
+	text := renderHostKeys(addr, khPath, infos, false, 0)
+
+	if *write {
+		added, conflicts, err := appendKnownHosts(khPath, lines)
+		if err != nil {
+			return a.fail(err)
+		}
+		result["written"] = true
+		result["added"] = added
+		result["conflicts"] = conflicts
+		text = renderHostKeys(addr, khPath, infos, true, added)
+		if len(conflicts) > 0 {
+			fmt.Fprintf(a.Stderr, "ssha: WARNING: %s already pins a different key for: %s\n", khPath, strings.Join(conflicts, ", "))
+			fmt.Fprintln(a.Stderr, "ssha: refusing to change it - verify the server out of band before editing known_hosts by hand")
+		}
+	}
+	a.emit(result, func() string { return text })
+	return ExitOK
+}
+
+func renderHostKeys(addr, khPath string, keys []hostKeyInfo, written bool, added int) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "host keys for %s:\n\n", addr)
+	for _, k := range keys {
+		fmt.Fprintf(&sb, "  %-24s %s\n", k.Type, k.Fingerprint)
+	}
+	sb.WriteString("\nknown_hosts lines:\n\n")
+	for _, k := range keys {
+		sb.WriteString("  " + k.Line + "\n")
+	}
+	if written {
+		fmt.Fprintf(&sb, "\nadded %d line(s) to %s\n", added, khPath)
+	} else {
+		fmt.Fprintf(&sb, "\nadd them with:  ssha host-key %s --write\n(target file: %s)\n", addr, khPath)
+	}
+	return sb.String()
+}
+
+// appendKnownHosts adds lines that are not already present. It returns the
+// number of lines written and any host+key type pairs that are already pinned
+// to a different key, which it refuses to overwrite.
+func appendKnownHosts(path string, lines []string) (int, []string, error) {
+	type pair struct{ host, keyType string }
+	existing := map[pair]string{}
+	raw, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		for _, l := range strings.Split(string(raw), "\n") {
+			fields := strings.Fields(l)
+			if len(fields) < 3 || strings.HasPrefix(l, "#") {
+				continue
+			}
+			existing[pair{fields[0], fields[1]}] = fields[2]
+		}
+	case !os.IsNotExist(err):
+		return 0, nil, err
+	}
+
+	var (
+		toWrite   []string
+		conflicts []string
+	)
+	for _, l := range lines {
+		fields := strings.Fields(l)
+		if len(fields) < 3 {
+			continue
+		}
+		p := pair{fields[0], fields[1]}
+		if have, ok := existing[p]; ok {
+			if have != fields[2] {
+				conflicts = append(conflicts, fields[0]+" "+fields[1])
+			}
+			continue
+		}
+		existing[p] = fields[2]
+		toWrite = append(toWrite, l)
+	}
+	if len(toWrite) == 0 {
+		return 0, conflicts, nil
+	}
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return 0, conflicts, err
+		}
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return 0, conflicts, err
+	}
+	defer f.Close()
+	prefix := ""
+	if len(raw) > 0 && !strings.HasSuffix(string(raw), "\n") {
+		prefix = "\n"
+	}
+	if _, err := f.WriteString(prefix + strings.Join(toWrite, "\n") + "\n"); err != nil {
+		return 0, conflicts, err
+	}
+	return len(toWrite), conflicts, nil
+}
+
+// parseHostPort splits "[user@]host[:port]" and "[v6addr]:port".
+func parseHostPort(spec string, defaultPort int) (string, int, error) {
+	spec = strings.TrimSpace(spec)
+	if i := strings.LastIndex(spec, "@"); i >= 0 {
+		spec = spec[i+1:]
+	}
+	if spec == "" {
+		return "", 0, errors.New("empty host")
+	}
+	if strings.HasPrefix(spec, "[") {
+		end := strings.Index(spec, "]")
+		if end < 0 {
+			return "", 0, fmt.Errorf("invalid address %q: missing closing bracket", spec)
+		}
+		host := spec[1:end]
+		rest := spec[end+1:]
+		if rest == "" {
+			return host, defaultPort, nil
+		}
+		if !strings.HasPrefix(rest, ":") {
+			return "", 0, fmt.Errorf("invalid address %q", spec)
+		}
+		p, err := strconv.Atoi(rest[1:])
+		if err != nil || p < 1 || p > 65535 {
+			return "", 0, fmt.Errorf("invalid port in %q", spec)
+		}
+		return host, p, nil
+	}
+	// A single colon separates host from port; several colons mean a bare IPv6
+	// literal, which has no port.
+	if strings.Count(spec, ":") == 1 {
+		host, portStr, _ := strings.Cut(spec, ":")
+		p, err := strconv.Atoi(portStr)
+		if err != nil || p < 1 || p > 65535 {
+			return "", 0, fmt.Errorf("invalid port in %q", spec)
+		}
+		return host, p, nil
+	}
+	return spec, defaultPort, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -287,10 +601,10 @@ func (a *App) cmdMulti(args []string) int {
 	r.fs.Var(&hosts, "host", "host name (repeatable)")
 	r.fs.Var(&tags, "tag", "host tag (repeatable)")
 	concurrency := r.fs.Int("concurrency", 0, "maximum parallel connections")
-	if code, ok := a.parse(r.fs, args); !ok {
-		return code
+	rest, perr := positionals(r.fs, args, 0)
+	if perr != nil {
+		return a.usageErr(perr.Error())
 	}
-	rest := trimmedArgs(r.fs)
 	command := r.cmd
 	if command == "" {
 		command = commandFrom(rest)
@@ -609,10 +923,10 @@ func renderAuditTable(records []audit.Record) string {
 
 func (a *App) cmdAuditShow(args []string) int {
 	fs := a.newFlagSet("audit show")
-	if code, ok := a.parse(fs, args); !ok {
-		return code
+	rest, perr := positionals(fs, args, 1)
+	if perr != nil {
+		return a.usageErr(perr.Error())
 	}
-	rest := trimmedArgs(fs)
 	if len(rest) != 1 {
 		return a.usageErr("usage: ssha audit show <id>")
 	}

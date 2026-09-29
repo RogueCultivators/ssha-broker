@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,6 +49,7 @@ type Broker struct {
 	policies policy.Set
 	auditor  *audit.Logger
 	pool     *sshx.Pool
+	prompt   sshx.PromptFunc
 
 	sessionID string
 	agent     *audit.Agent
@@ -58,8 +60,23 @@ type Broker struct {
 	maxFieldBytes int
 }
 
+// Options tweaks how a broker is constructed.
+type Options struct {
+	// Prompt supplies secrets that are absent from the environment and from
+	// files. The CLI sets it when stdin is a terminal; the MCP server leaves it
+	// nil so a headless agent can never block on a password prompt.
+	Prompt sshx.PromptFunc
+	// AuditPath overrides config.Audit.Path when non-empty.
+	AuditPath string
+}
+
 // Open loads the config, compiles policies and opens the audit log.
 func Open(cfgPath string) (*Broker, error) {
+	return OpenWithOptions(cfgPath, Options{})
+}
+
+// OpenWithOptions is Open with explicit options.
+func OpenWithOptions(cfgPath string, opts Options) (*Broker, error) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, err
@@ -68,7 +85,7 @@ func Open(cfgPath string) (*Broker, error) {
 	if err != nil {
 		return nil, err
 	}
-	auditPath := cfg.Audit.Path
+	auditPath := firstNonEmpty(opts.AuditPath, cfg.Audit.Path)
 	if auditPath == "" {
 		auditPath = config.DefaultAuditPath()
 	}
@@ -85,6 +102,7 @@ func Open(cfgPath string) (*Broker, error) {
 		policies:      policies,
 		auditor:       auditor,
 		pool:          sshx.NewPool(5 * time.Minute),
+		prompt:        opts.Prompt,
 		sessionID:     newSessionID(),
 		agent:         audit.DetectAgent(),
 		actor:         audit.Actor(),
@@ -545,6 +563,7 @@ func (b *Broker) resolveTarget(h *config.Host) (sshx.Target, error) {
 		Auth:    h.Auth,
 		HostKey: h.HostKey,
 		Timeout: b.cfg.EffectivePolicy(h).Timeout.D(),
+		Prompt:  b.prompt,
 	}
 	if h.ProxyJump == "" {
 		return t, nil
@@ -560,6 +579,7 @@ func (b *Broker) resolveTarget(h *config.Host) (sshx.Target, error) {
 		Auth:    jump.Auth,
 		HostKey: jump.HostKey,
 		Timeout: b.cfg.EffectivePolicy(jump).Timeout.D(),
+		Prompt:  b.prompt,
 	}
 	t.Proxy = &proxy
 	return t, nil
@@ -652,6 +672,70 @@ func (b *Broker) DescribeHost(name string) (HostInfo, error) {
 	return b.hostInfo(h), nil
 }
 
+// HostTest is the outcome of a connection self-test.
+type HostTest struct {
+	Host               string `json:"host"`
+	OK                 bool   `json:"ok"`
+	Addr               string `json:"addr"`
+	User               string `json:"user"`
+	Auth               string `json:"auth"`
+	PolicyMode         string `json:"policy_mode"`
+	Via                string `json:"via,omitempty"`
+	HostKeyType        string `json:"host_key_type,omitempty"`
+	HostKeyFingerprint string `json:"host_key_fingerprint,omitempty"`
+	LatencyMS          int64  `json:"latency_ms"`
+	Error              string `json:"error,omitempty"`
+}
+
+// Test connects to a host, verifies the host key and the credentials, and runs
+// probe (default "true") to prove that command execution works. It writes no
+// audit record: it is a diagnostic, not an operation on the target.
+func (b *Broker) Test(ctx context.Context, name, probe string) *HostTest {
+	if probe == "" {
+		probe = "true"
+	}
+	h, err := b.cfg.Host(name)
+	if err != nil {
+		return &HostTest{Host: name, Error: err.Error()}
+	}
+	res := &HostTest{
+		Host:       h.Name,
+		Addr:       h.AddrPort(),
+		User:       h.User,
+		Auth:       h.AuthType(),
+		PolicyMode: b.cfg.EffectivePolicy(h).Mode,
+		Via:        h.ProxyJump,
+	}
+	target, err := b.resolveTarget(h)
+	if err != nil {
+		res.Error = err.Error()
+		return res
+	}
+
+	start := time.Now()
+	client, err := sshx.Dial(ctx, target)
+	if err != nil {
+		res.LatencyMS = time.Since(start).Milliseconds()
+		res.Error = err.Error()
+		return res
+	}
+	defer client.Close()
+
+	run, err := client.Run(ctx, probe, "", nil, 15*time.Second, 4096)
+	res.LatencyMS = time.Since(start).Milliseconds()
+	res.HostKeyType = client.HostKeyType()
+	res.HostKeyFingerprint = client.HostKeyFingerprint()
+	switch {
+	case err != nil:
+		res.Error = err.Error()
+	case run.ExitCode != 0:
+		res.Error = fmt.Sprintf("probe %q exited %d: %s", probe, run.ExitCode, firstNonEmpty(strings.TrimSpace(run.Stderr), strings.TrimSpace(run.Stdout)))
+	default:
+		res.OK = true
+	}
+	return res
+}
+
 // Tags returns the sorted set of tags in use.
 func (b *Broker) Tags() []string {
 	set := map[string]struct{}{}
@@ -673,6 +757,11 @@ var ErrNoConfig = errors.New("no configuration")
 
 // OpenDefault locates a config file and opens the broker.
 func OpenDefault(explicit string) (*Broker, error) {
+	return OpenDefaultWithOptions(explicit, Options{})
+}
+
+// OpenDefaultWithOptions is OpenDefault with explicit options.
+func OpenDefaultWithOptions(explicit string, opts Options) (*Broker, error) {
 	path := explicit
 	if path == "" {
 		p, err := config.Discover()
@@ -681,5 +770,5 @@ func OpenDefault(explicit string) (*Broker, error) {
 		}
 		path = p
 	}
-	return Open(path)
+	return OpenWithOptions(path, opts)
 }

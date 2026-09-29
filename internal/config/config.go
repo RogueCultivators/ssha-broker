@@ -143,6 +143,10 @@ func Merge(base Spec, over *Spec) Spec {
 }
 
 // Auth describes how to authenticate a host.
+//
+// Every secret can come from an environment variable, a file, or - from the
+// CLI only - an interactive prompt. Environment variables win, then files,
+// then the prompt.
 type Auth struct {
 	// Type is one of key, agent, password.
 	Type string `yaml:"type"`
@@ -150,10 +154,12 @@ type Auth struct {
 	KeyPath string `yaml:"key_path"`
 	// KeyEnv holds a PEM private key inline (for Type=key with no file).
 	KeyEnv string `yaml:"key_env"`
-	// PassphraseEnv holds the passphrase for an encrypted key.
-	PassphraseEnv string `yaml:"passphrase_env"`
-	// PasswordEnv holds the password for Type=password.
-	PasswordEnv string `yaml:"password_env"`
+	// PassphraseEnv and PassphraseFile hold the passphrase for an encrypted key.
+	PassphraseEnv  string `yaml:"passphrase_env"`
+	PassphraseFile string `yaml:"passphrase_file"`
+	// PasswordEnv and PasswordFile hold the password for Type=password.
+	PasswordEnv  string `yaml:"password_env"`
+	PasswordFile string `yaml:"password_file"`
 }
 
 // HostKey describes how the remote host key is verified.
@@ -360,9 +366,8 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("config: host %q: auth.type=key requires key_path or key_env", h.Name)
 			}
 		case "password":
-			if h.Auth.PasswordEnv == "" {
-				return fmt.Errorf("config: host %q: auth.type=password requires password_env", h.Name)
-			}
+			// No source is required here: the CLI can prompt for the password.
+			// A headless MCP server reports a clear error at connect time.
 		case "agent":
 		default:
 			return fmt.Errorf("config: host %q: unknown auth.type %q", h.Name, h.Auth.Type)

@@ -191,11 +191,6 @@ func TestValidateErrors(t *testing.T) {
 			want: "key_path or key_env",
 		},
 		{
-			name: "password auth without an env var",
-			body: "hosts:\n  - name: web\n    auth: {type: password}\n",
-			want: "password_env",
-		},
-		{
 			name: "unknown auth type",
 			body: "hosts:\n  - name: web\n    auth: {type: telepathy}\n",
 			want: "unknown auth.type",
@@ -226,6 +221,18 @@ func TestValidateErrors(t *testing.T) {
 				t.Errorf("error = %v, want it to contain %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestPasswordAuthWithoutASourceIsAllowed(t *testing.T) {
+	// The CLI can prompt for the password, so a missing source is not a config
+	// error; a headless MCP server reports it when it tries to connect.
+	cfg, err := Load(writeConfig(t, "hosts:\n  - name: web\n    auth: {type: password}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Hosts[0].AuthType(); got != "password" {
+		t.Errorf("AuthType() = %q, want password", got)
 	}
 }
 
