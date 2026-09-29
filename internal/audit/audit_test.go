@@ -266,16 +266,16 @@ func TestGet(t *testing.T) {
 	}
 }
 
-// TestRecordWithoutAnAppHashesLikeItAlwaysDid guards the compatibility promise
-// of the hash chain: an audit file written before Record gained the App field
-// must still verify, because verification re-marshals each record and compares
-// hashes. A record with no app has to serialise to exactly the bytes it was
-// hashed from, which means the new field must stay omitempty and must not
-// shuffle the fields around it.
-func TestRecordWithoutAnAppHashesLikeItAlwaysDid(t *testing.T) {
+// TestRecordJSONShapeIsFrozen guards the promise the hash chain makes: an audit
+// file must keep verifying, and verification re-marshals each record and
+// compares hashes. So the JSON shape of a record is wire format, not an
+// implementation detail. Renaming, reordering or un-omitempty-ing a field here
+// invalidates every log ever written, and this test is what stops that.
+func TestRecordJSONShapeIsFrozen(t *testing.T) {
 	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 
-	// The shape of Record before the App field existed.
+	// A frozen copy of the on-disk shape. Do not "fix" this when Record
+	// changes: it is the point of the test.
 	type recordV1 struct {
 		ID         string    `json:"id"`
 		Time       time.Time `json:"time"`
@@ -327,13 +327,13 @@ func TestRecordWithoutAnAppHashesLikeItAlwaysDid(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(oldJSON) != string(newJSON) {
-		t.Fatalf("a record without an app no longer serialises the same, so old audit logs would stop verifying.\nold: %s\nnew: %s", oldJSON, newJSON)
+		t.Fatalf("the record wire format changed, so every existing audit log would stop verifying.\nfrozen: %s\ncurrent: %s", oldJSON, newJSON)
 	}
 	// The chain is built over the JSON, so identical bytes mean an identical
 	// hash; compare that directly rather than through the Record type.
 	sumOld := sha256.Sum256(append([]byte("sha256:prev\n"), oldJSON...))
 	sumNew := sha256.Sum256(append([]byte("sha256:prev\n"), newJSON...))
 	if sumOld != sumNew {
-		t.Error("the hash of an app-less record changed")
+		t.Error("the hash of a record changed, which breaks every existing audit log")
 	}
 }

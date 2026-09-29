@@ -240,59 +240,25 @@ type HostKey struct {
 	Insecure bool `yaml:"insecure,omitempty" json:"insecure,omitempty"`
 }
 
-// App describes a workload running on a host. An agent that is asked to fix
-// "the payment service" needs to find both the machine and the knobs to touch;
-// apps are how it discovers that without being told an address.
-type App struct {
-	Name        string `yaml:"name" json:"name"`
-	Description string `yaml:"description,omitempty" json:"description,omitempty"`
-	// Kind is a free-form classifier: web, api, worker, cron, db, cache, queue,
-	// proxy, batch...
-	Kind string `yaml:"kind,omitempty" json:"kind,omitempty"`
-	// Unit is the systemd (or supervisor) unit name, so an agent can go straight
-	// to `systemctl status`.
-	Unit string `yaml:"unit,omitempty" json:"unit,omitempty"`
-	// Ports the app listens on.
-	Ports []int `yaml:"ports,omitempty" json:"ports,omitempty"`
-	// Logs are the log files or journal units worth reading.
-	Logs []string `yaml:"logs,omitempty" json:"logs,omitempty"`
-	// Path is the install or working directory.
-	Path string `yaml:"path,omitempty" json:"path,omitempty"`
-	// Tags are extra search terms (owner team, tier, protocol...).
-	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
-	// Runbook is a link to how to operate this app.
-	Runbook string `yaml:"runbook,omitempty" json:"runbook,omitempty"`
-}
-
-// searchText is everything a discovery query is matched against.
-func (a App) searchText() string {
-	parts := []string{a.Name, a.Description, a.Kind, a.Unit, a.Path, a.Runbook}
-	parts = append(parts, a.Tags...)
-	parts = append(parts, a.Logs...)
-	for _, p := range a.Ports {
-		parts = append(parts, strconv.Itoa(p))
-	}
-	return strings.ToLower(strings.Join(parts, " "))
-}
-
 // Host is a single SSH target.
 type Host struct {
-	Name        string   `yaml:"name" json:"name"`
-	Addr        string   `yaml:"addr,omitempty" json:"addr,omitempty"`
-	Port        int      `yaml:"port,omitempty" json:"port,omitempty"`
-	User        string   `yaml:"user,omitempty" json:"user,omitempty"`
-	Tags        []string `yaml:"tags,omitempty" json:"tags,omitempty"`
-	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
-	// Apps are the workloads on this host. They are searchable and are shown to
-	// agents at every disclosure level except blind.
-	Apps      []App             `yaml:"apps,omitempty" json:"apps,omitempty"`
-	Auth      Auth              `yaml:"auth" json:"auth"`
-	HostKey   HostKey           `yaml:"host_key" json:"host_key"`
-	ProxyJump string            `yaml:"proxy_jump,omitempty" json:"proxy_jump,omitempty"`
-	WorkDir   string            `yaml:"work_dir,omitempty" json:"work_dir,omitempty"`
-	Env       map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
-	Policy    *Spec             `yaml:"policy,omitempty" json:"policy,omitempty"`
-	Disabled  bool              `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+	Name string   `yaml:"name" json:"name"`
+	Addr string   `yaml:"addr,omitempty" json:"addr,omitempty"`
+	Port int      `yaml:"port,omitempty" json:"port,omitempty"`
+	User string   `yaml:"user,omitempty" json:"user,omitempty"`
+	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	// Description is the operator's note about this machine: what runs on it,
+	// what it is for, anything an agent should know. It is what discovery
+	// searches, so a good note is how an agent finds the right host without
+	// being told an address.
+	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
+	Auth        Auth              `yaml:"auth" json:"auth"`
+	HostKey     HostKey           `yaml:"host_key" json:"host_key"`
+	ProxyJump   string            `yaml:"proxy_jump,omitempty" json:"proxy_jump,omitempty"`
+	WorkDir     string            `yaml:"work_dir,omitempty" json:"work_dir,omitempty"`
+	Env         map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	Policy      *Spec             `yaml:"policy,omitempty" json:"policy,omitempty"`
+	Disabled    bool              `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 }
 
 // AuthType returns the effective auth type, defaulting to key.
@@ -446,14 +412,11 @@ func matchAny(patterns []string, name string) bool {
 	return false
 }
 
-// searchText is everything about a host that a discovery query matches against:
-// its name, description, tags and every app it runs.
+// searchText is everything a discovery query matches against: the host name,
+// the operator's note and the tags.
 func (h *Host) searchText() string {
 	parts := append([]string{h.Name}, h.Description)
 	parts = append(parts, h.Tags...)
-	for _, a := range h.Apps {
-		parts = append(parts, a.searchText())
-	}
 	return strings.ToLower(strings.Join(parts, " "))
 }
 
@@ -466,16 +429,6 @@ func (h *Host) MatchQuery(query string) bool {
 		}
 	}
 	return true
-}
-
-// App returns the named app, if the host runs it.
-func (h *Host) App(name string) (App, bool) {
-	for _, a := range h.Apps {
-		if strings.EqualFold(a.Name, name) {
-			return a, true
-		}
-	}
-	return App{}, false
 }
 
 // Validate checks structural invariants and normalizes defaults.
@@ -524,23 +477,6 @@ func (c *Config) Validate() error {
 		if spec.Mode == ModeReadonly && len(spec.Allow) == 0 {
 			return fmt.Errorf("config: host %q: policy mode readonly requires at least one allow_commands entry", h.Name)
 		}
-		apps := make(map[string]struct{}, len(h.Apps))
-		for j := range h.Apps {
-			a := &h.Apps[j]
-			if a.Name == "" {
-				return fmt.Errorf("config: host %q: app #%d has no name", h.Name, j+1)
-			}
-			key := strings.ToLower(a.Name)
-			if _, dup := apps[key]; dup {
-				return fmt.Errorf("config: host %q: duplicate app name %q", h.Name, a.Name)
-			}
-			apps[key] = struct{}{}
-			for _, p := range a.Ports {
-				if p < 1 || p > 65535 {
-					return fmt.Errorf("config: host %q: app %q: invalid port %d", h.Name, a.Name, p)
-				}
-			}
-		}
 		c.byName[h.Name] = h
 	}
 	for i, h := range c.Hosts {
@@ -552,6 +488,19 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// migrationHint turns a removed-field complaint into instructions, because
+// strict parsing is only friendly if it says what to do instead.
+func migrationHint(err error) string {
+	switch {
+	case strings.Contains(err.Error(), "field apps not found"):
+		return "\n\nhint: the per-host `apps` list was removed. Put what runs on the\n" +
+			"host in its `description` (the note) instead - agents search that text,\n" +
+			"so unit names, ports and log paths belong there in your own words."
+	default:
+		return ""
+	}
 }
 
 // Load reads, parses and validates a config file.
@@ -566,7 +515,7 @@ func Load(path string) (*Config, error) {
 	dec.KnownFields(true)
 	cfg := &Config{Version: 1}
 	if err := dec.Decode(cfg); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w%s", path, err, migrationHint(err))
 	}
 	if cfg.Version == 0 {
 		cfg.Version = 1

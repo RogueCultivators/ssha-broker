@@ -30,8 +30,11 @@ git clone https://github.com/RogueCultivators/ssha-broker && cd ssha-broker
 跑完之后：
 
 ```
-== open the editor ==
-   http://127.0.0.1:8770/?token=REPLACE-WITH-YOUR-TOKEN
+ssha 配置界面
+  配置文件：~/.config/ssha/config.yaml
+
+  用浏览器打开下面这条地址（token 必须带，每次启动都会变）：
+    http://127.0.0.1:8770/?token=REPLACE-WITH-YOUR-TOKEN
 ```
 
 **把这条 URL 收藏起来**：token 存在 `~/.local/state/ssha/ui.token`（或
@@ -258,7 +261,7 @@ ssha audit verify
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| 页面打开是「needs the token from the command line」 | 你打开了裸地址。用 `?token=` 那条 URL，或从 `--token-file` 里读 |
+| 页面显示「这个界面需要命令行里那个 token」 | 你打开了裸地址。用 `?token=` 那条 URL，或从 `--token-file` 里读 |
 | `cannot listen on 127.0.0.1:8770: address already in use` | 端口被占。`ss -ltnp \| grep 8770`，或换 `--port` |
 | `status` 里 `Active: activating (auto-restart)` | 看 `journalctl -u ssha-ui -n 50`，通常是 `--config` 指向的文件不存在或校验失败 |
 | 改完 unit 不生效 | 忘了 `systemctl --user daemon-reload`（系统服务是 `sudo systemctl daemon-reload`） |

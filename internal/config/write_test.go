@@ -132,18 +132,10 @@ func TestUpsertHostAddsAndKeepsOthers(t *testing.T) {
 
 	app := Host{
 		Name: "api-1", Addr: "10.0.0.30", User: "deploy",
-		Description: "api tier",
+		Description: "api tier, runs payment-api",
 		Tags:        []string{"prod"},
-		Apps: []App{{
-			Name:        "payment-api",
-			Description: "handles payments",
-			Kind:        "api",
-			Unit:        "payment-api.service",
-			Ports:       []int{8080},
-			Logs:        []string{"/var/log/payment/api.log"},
-		}},
-		Auth:   Auth{Type: "key", KeyPath: "~/.ssh/id_ed25519"},
-		Policy: &Spec{Mode: ModeAllow},
+		Auth:        Auth{Type: "key", KeyPath: "~/.ssh/id_ed25519"},
+		Policy:      &Spec{Mode: ModeAllow},
 	}
 	if err := UpsertHost(path, app); err != nil {
 		t.Fatalf("UpsertHost: %v", err)
@@ -160,11 +152,8 @@ func TestUpsertHostAddsAndKeepsOthers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Apps) != 1 || got.Apps[0].Name != "payment-api" {
-		t.Fatalf("app did not round-trip: %+v", got.Apps)
-	}
-	if got.Apps[0].Unit != "payment-api.service" || got.Apps[0].Ports[0] != 8080 {
-		t.Errorf("app details lost: %+v", got.Apps[0])
+	if got.Description != "api tier, runs payment-api" {
+		t.Errorf("the note did not round-trip: %q", got.Description)
 	}
 	if !strings.Contains(readFile(t, path), "# The database. Do not touch.") {
 		t.Error("existing comments were lost when appending a host")

@@ -29,7 +29,7 @@ Usage:
 Commands:
   init                     write a starter config file
   hosts [list]             list configured hosts
-  hosts find <words...>    find the hosts running something, e.g. hosts find payment
+  hosts find <words...>    find a host by its note, e.g. hosts find payment
   hosts show <name>        show one host's details (including its apps)
   hosts test <name>...     verify host key, credentials and command execution
   host-key <host|addr>     fetch a host's public keys (onboarding aid)

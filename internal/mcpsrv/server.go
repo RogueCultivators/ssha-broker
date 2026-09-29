@@ -28,12 +28,10 @@ const Instructions = `ssha is an SSH broker. The hosts, their credentials and th
 
 Workflow:
 1. Call ssh_list_hosts to see what you can reach. Each host reports its policy mode and the
-   applications it runs, with their systemd units, ports and log paths. Pass query to find
-   where something lives, e.g. query="payment" for a host running the payment-api app. Prefer
-   that over asking the user which machine to use.
+   operator's free-text note: what runs on it, the systemd unit names, the log paths. Pass query
+   to search those notes, e.g. query="payment", instead of asking the user which machine to use.
 2. If a command might be restricted, call ssh_policy_check before running it.
-3. Call ssh_exec for one host, ssh_exec_many for several hosts at once (hosts, tags, query or app).
-   Pass app whenever you know which application you are working on.
+3. Call ssh_exec for one host, ssh_exec_many for several hosts at once (hosts, tags or query).
 4. Use ssh_upload / ssh_download to move files.
 
 Rules and behavior:
@@ -49,9 +47,8 @@ Rules and behavior:
   tool results, and any that appear in output, errors or audit records are replaced with
   <host>, <user> or <redacted>. Treat those as opaque identifiers, not as missing data.
   Do not try to discover the real values (no /etc/hosts, hostname -I, ip a, curl ifconfig.me).
-- When a command is for a specific application, pass app="<name>" (from the host's apps list). It is
-  recorded in the audit log and rejected if the host does not run that application, so the log stays
-  answerable per service. ssh_audit can then be filtered by app.
+- The note is written by hand and is not a schema: read it, and do not assume fields that are not
+  there. If it does not say how to operate something, ask the user rather than guessing.
 - Never pass --reveal to the ssha CLI: that flag disables identity hiding and is for the
   human operator only.`
 
@@ -193,7 +190,7 @@ func isLoopback(addr string) bool {
 type listHostsInput struct {
 	Tags            []string `json:"tags,omitempty" jsonschema:"Only return hosts carrying all of these tags."`
 	NameGlob        []string `json:"name_glob,omitempty" jsonschema:"Only return hosts whose name matches one of these glob patterns, e.g. web-*."`
-	Query           string   `json:"query,omitempty" jsonschema:"Free-text search over host name, description, tags and the apps each host runs. Use this to find where a service lives, e.g. \"payment\"."`
+	Query           string   `json:"query,omitempty" jsonschema:"Free-text search over the host name, the operator's note and the tags. Use this to find where a service lives, e.g. query=\"payment\"."`
 	IncludeDisabled bool     `json:"include_disabled,omitempty" jsonschema:"Also list hosts that are disabled in the ssha config."`
 }
 
@@ -205,7 +202,6 @@ type listHostsOutput struct {
 type execInput struct {
 	Host           string            `json:"host" jsonschema:"Target host name, exactly as returned by ssh_list_hosts."`
 	Command        string            `json:"command" jsonschema:"Shell command to run on the remote host."`
-	App            string            `json:"app,omitempty" jsonschema:"Name the application from the host's apps list that this command is for. It is recorded in the audit log, and rejected if the host does not run it."`
 	Cwd            string            `json:"cwd,omitempty" jsonschema:"Working directory. Defaults to the host's configured work_dir, otherwise the login directory."`
 	Env            map[string]string `json:"env,omitempty" jsonschema:"Extra environment variables to export before the command."`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty" jsonschema:"Per-command timeout. Can only shorten the host's policy limit. 0 means use the policy limit."`
@@ -215,8 +211,7 @@ type execInput struct {
 type execManyInput struct {
 	Hosts          []string `json:"hosts,omitempty" jsonschema:"Explicit host names to run on."`
 	Tags           []string `json:"tags,omitempty" jsonschema:"Select every host carrying all of these tags instead of naming hosts."`
-	Query          string   `json:"query,omitempty" jsonschema:"Select hosts by free-text search over name, description, tags and apps, e.g. payment."`
-	App            string   `json:"app,omitempty" jsonschema:"Restrict to hosts running this application and record it against every command, e.g. checkout-api."`
+	Query          string   `json:"query,omitempty" jsonschema:"Select hosts by free-text search over name, note and tags, e.g. payment."`
 	Command        string   `json:"command" jsonschema:"Shell command to run on each host."`
 	Cwd            string   `json:"cwd,omitempty" jsonschema:"Working directory for each host."`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty" jsonschema:"Per-command timeout, capped by each host's policy."`
@@ -264,7 +259,6 @@ type policyCheckInput struct {
 
 type auditInput struct {
 	Host     string `json:"host,omitempty" jsonschema:"Only return records for this host."`
-	App      string `json:"app,omitempty" jsonschema:"Only return records logged against this application, e.g. checkout-api."`
 	Type     string `json:"type,omitempty" jsonschema:"Filter by operation: exec, upload or download."`
 	Decision string `json:"decision,omitempty" jsonschema:"Filter by decision: allowed or denied."`
 	Limit    int    `json:"limit,omitempty" jsonschema:"Maximum records to return, newest last. Defaults to 50."`
@@ -283,9 +277,9 @@ type auditOutput struct {
 func registerTools(s *mcp.Server, be Backend) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "ssh_list_hosts",
-		Description: "List the SSH hosts this agent may reach, with tags, the apps each one runs, policy mode and limits. " +
+		Description: "List the SSH hosts this agent may reach: their tags, the operator's note about what runs on each one, the policy mode and the limits. " +
 			"Call this first: every other tool takes a host name returned here. " +
-			"Use query to find where a service lives, e.g. query=\"payment\" matches a host that runs an app named payment-api.",
+			"Use query to search those notes, e.g. query=\"payment\".",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in listHostsInput) (*mcp.CallToolResult, listHostsOutput, error) {
 		hosts := be.FindHosts(broker.HostQuery{
 			Tags:            in.Tags,
@@ -305,7 +299,6 @@ func registerTools(s *mcp.Server, be Backend) {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in execInput) (*mcp.CallToolResult, broker.ExecResult, error) {
 		res, err := be.Exec(ctx, broker.ExecRequest{
 			Host:           in.Host,
-			App:            in.App,
 			Command:        in.Command,
 			Cwd:            in.Cwd,
 			Env:            in.Env,
@@ -327,7 +320,6 @@ func registerTools(s *mcp.Server, be Backend) {
 			Hosts:       in.Hosts,
 			Tags:        in.Tags,
 			Query:       in.Query,
-			App:         in.App,
 			Command:     in.Command,
 			Cwd:         in.Cwd,
 			Timeout:     secondsToDuration(in.TimeoutSeconds),
@@ -454,7 +446,6 @@ func registerTools(s *mcp.Server, be Backend) {
 		}
 		records, err := be.AuditQuery(audit.Filter{
 			Host:     in.Host,
-			App:      in.App,
 			Type:     in.Type,
 			Decision: in.Decision,
 		}, limit)
@@ -500,36 +491,6 @@ func renderHosts(hosts []broker.HostInfo) string {
 		b.WriteString("\n")
 		if len(h.Tags) > 0 {
 			fmt.Fprintf(&b, "  tags: %s\n", strings.Join(h.Tags, ", "))
-		}
-		for _, app := range h.Apps {
-			fmt.Fprintf(&b, "  app: %s", app.Name)
-			if app.Kind != "" {
-				fmt.Fprintf(&b, " (%s)", app.Kind)
-			}
-			if app.Description != "" {
-				fmt.Fprintf(&b, " - %s", app.Description)
-			}
-			b.WriteString("\n")
-			var details []string
-			if app.Unit != "" {
-				details = append(details, "unit="+app.Unit)
-			}
-			if len(app.Ports) > 0 {
-				ports := make([]string, len(app.Ports))
-				for i, p := range app.Ports {
-					ports[i] = strconv.Itoa(p)
-				}
-				details = append(details, "ports="+strings.Join(ports, ","))
-			}
-			if app.Path != "" {
-				details = append(details, "path="+app.Path)
-			}
-			if len(app.Logs) > 0 {
-				details = append(details, "logs="+strings.Join(app.Logs, ","))
-			}
-			if len(details) > 0 {
-				fmt.Fprintf(&b, "       %s\n", strings.Join(details, " "))
-			}
 		}
 		fmt.Fprintf(&b, "  policy: %s, timeout: %s, max output: %d bytes\n", h.PolicyMode, h.Timeout, h.MaxOutputSize)
 		if len(h.Allow) > 0 {

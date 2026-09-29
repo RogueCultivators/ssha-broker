@@ -30,12 +30,13 @@ or denied, is appended to a hash-chained audit log and returns an `audit_id`.
    ssha hosts list --tag prod
    ```
 
-   Each host entry lists the **applications** it runs, with the systemd unit, ports,
-   log files and runbook from the operator's config. That is how you go from "the
-   checkout service is slow" to the right command without guessing or asking.
+   Each host carries a free-text **note** ("备注") from the operator: what runs on
+   it, the systemd unit names, the log paths, who owns it. That note is what you
+   search, and it is how you go from "the checkout service is slow" to the right
+   command without guessing or asking.
 
    ```bash
-   ssha hosts show prod-web       # applications, units, log paths, policy
+   ssha hosts show prod-web       # the note, in full, plus the policy
    ```
 
 2. If a host is newly configured or something fails, self-test it. This checks the
@@ -61,25 +62,17 @@ or denied, is appended to a hash-chained audit log and returns an `audit_id`.
    ```
 
 5. Run the command. Always put `--` between the host and the remote command so
-   the remote flags are not parsed locally. When the work is for a specific
-   application, name it with `--app`: the broker checks that the host really runs
-   it, and the audit log then answers "what has been done to checkout-api"
-   rather than only "which host was touched".
+   the remote flags are not parsed locally.
 
    ```bash
    ssha run web-1 -- systemctl status nginx
-   ssha run web-1 --app checkout-api -- systemctl status checkout-api
    ssha run web-1 --cwd /srv/app -- tail -n 100 logs/app.log
    ssha run web-1 -e APP_ENV=staging -- env
    ```
 
-   Passing an app the host does not run is refused and the error lists what it
-   does run. Do not guess: use `hosts show` or `hosts find` first.
-
 6. Touch a fleet in one call. Prefer selecting by what the host runs:
 
    ```bash
-   ssha multi --app checkout-api -- systemctl restart checkout-api
    ssha multi --query checkout -- systemctl status checkout-api
    ssha multi --tag prod -- uptime
    ssha multi --host web-1 --host web-2 -- df -h
@@ -182,7 +175,6 @@ the address, say so and let the operator decide.
 
 ```bash
 ssha audit ls --host web-1 --limit 20
-ssha audit ls --app checkout-api --limit 20
 ssha audit show <audit_id>
 ssha audit verify          # confirms the log has not been tampered with
 ```

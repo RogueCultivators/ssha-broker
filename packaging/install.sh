@@ -79,7 +79,11 @@ if [ "$MODE" = "user" ]; then
   install_unit "$REPO/packaging/systemd/ssha-ui.user.service" "$UNITDIR/ssha-ui.service"
 
   systemctl --user daemon-reload
-  systemctl --user enable --now ssha-ui.service
+  systemctl --user enable ssha-ui.service
+  # restart, not `enable --now`: on an already-running service `--now` is a
+  # no-op, so an upgrade would keep serving the previous binary and the config
+  # it read at startup.
+  systemctl --user restart ssha-ui.service
   note "started ssha-ui.service"
 
   # Without linger the service stops when you log out.
@@ -151,10 +155,12 @@ else
   [ "$WITH_MCP" = "1" ] && sed -i "s#--http 127.0.0.1:8765#--http 127.0.0.1:$MCP_PORT#" /etc/systemd/system/ssha-mcp.service
 
   systemctl daemon-reload
-  systemctl enable --now ssha-ui.service
+  systemctl enable ssha-ui.service
+  systemctl restart ssha-ui.service
   note "started ssha-ui.service"
   if [ "$WITH_MCP" = "1" ]; then
-    systemctl enable --now ssha-mcp.service
+    systemctl enable ssha-mcp.service
+    systemctl restart ssha-mcp.service
     note "started ssha-mcp.service (agents connect to http://127.0.0.1:$MCP_PORT/mcp)"
   fi
 

@@ -155,21 +155,20 @@ func newSessionID() string {
 // Fields that a host's disclosure policy withholds are omitted entirely rather
 // than sent empty, so a caller can tell "hidden" from "not configured".
 type HostInfo struct {
-	Name          string       `json:"name"`
-	Addr          string       `json:"addr,omitempty"`
-	User          string       `json:"user,omitempty"`
-	Tags          []string     `json:"tags,omitempty"`
-	Description   string       `json:"description,omitempty"`
-	Apps          []config.App `json:"apps,omitempty"`
-	Auth          string       `json:"auth,omitempty"`
-	ProxyJump     string       `json:"proxy_jump,omitempty"`
-	WorkDir       string       `json:"work_dir,omitempty"`
-	PolicyMode    string       `json:"policy_mode"`
-	Allow         []string     `json:"allow_commands,omitempty"`
-	Deny          []string     `json:"deny_commands,omitempty"`
-	Timeout       string       `json:"timeout"`
-	MaxOutputSize int          `json:"max_output_bytes"`
-	Disabled      bool         `json:"disabled,omitempty"`
+	Name          string   `json:"name"`
+	Addr          string   `json:"addr,omitempty"`
+	User          string   `json:"user,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
+	Description   string   `json:"description,omitempty"`
+	Auth          string   `json:"auth,omitempty"`
+	ProxyJump     string   `json:"proxy_jump,omitempty"`
+	WorkDir       string   `json:"work_dir,omitempty"`
+	PolicyMode    string   `json:"policy_mode"`
+	Allow         []string `json:"allow_commands,omitempty"`
+	Deny          []string `json:"deny_commands,omitempty"`
+	Timeout       string   `json:"timeout"`
+	MaxOutputSize int      `json:"max_output_bytes"`
+	Disabled      bool     `json:"disabled,omitempty"`
 }
 
 // disclosure returns the effective disclosure level for a host, honouring the
@@ -190,7 +189,6 @@ func (b *Broker) hostInfo(h *config.Host) HostInfo {
 		Name:          h.Name,
 		Tags:          h.Tags,
 		Description:   h.Description,
-		Apps:          h.Apps,
 		PolicyMode:    spec.Mode,
 		Allow:         spec.Allow,
 		Deny:          spec.Deny,
@@ -202,7 +200,6 @@ func (b *Broker) hostInfo(h *config.Host) HostInfo {
 	case config.DisclosureBlind:
 		info.Tags = nil
 		info.Description = ""
-		info.Apps = nil
 		info.Allow = nil
 		info.Deny = nil
 	case config.DisclosureAlias:
@@ -304,10 +301,6 @@ type ExecRequest struct {
 	Env            map[string]string
 	Timeout        time.Duration
 	MaxOutputBytes int
-	// App names the workload this command is for. When set, the host must
-	// actually run it; that keeps "what has been done to checkout-api"
-	// answerable from the audit log.
-	App string
 	// DryRun only evaluates policy; nothing is executed and nothing is audited.
 	DryRun bool
 }
@@ -317,7 +310,6 @@ type ExecRequest struct {
 type ExecResult struct {
 	AuditID    string `json:"audit_id,omitempty"`
 	Host       string `json:"host"`
-	App        string `json:"app,omitempty"`
 	Command    string `json:"command"`
 	Cwd        string `json:"cwd,omitempty"`
 	ExitCode   int    `json:"exit_code"`
@@ -338,13 +330,10 @@ func (b *Broker) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkApp(h, req.App); err != nil {
-		return nil, err
-	}
 	spec := b.cfg.EffectivePolicy(h)
 	compiled := b.policies.For(h.Name)
 
-	res := &ExecResult{Host: h.Name, App: req.App, Command: req.Command, Decision: audit.DecisionAllowed}
+	res := &ExecResult{Host: h.Name, Command: req.Command, Decision: audit.DecisionAllowed}
 
 	decision := compiled.Decide(req.Command)
 	if !decision.Allowed {
@@ -354,7 +343,6 @@ func (b *Broker) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
 		b.record(&audit.Record{
 			Type:     audit.TypeExec,
 			Host:     h.Name,
-			App:      req.App,
 			Command:  req.Command,
 			Cwd:      req.Cwd,
 			Decision: audit.DecisionDenied,
@@ -382,7 +370,6 @@ func (b *Broker) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
 	rec := &audit.Record{
 		Type:     audit.TypeExec,
 		Host:     h.Name,
-		App:      req.App,
 		Command:  req.Command,
 		Cwd:      cwd,
 		Decision: audit.DecisionAllowed,
@@ -424,10 +411,7 @@ type MultiExecRequest struct {
 	Tags  []string
 	// Query selects hosts the same way ssh_list_hosts does, e.g. every host
 	// running the payment-api app.
-	Query string
-	// App restricts the selection to hosts running this application and records
-	// it against every command, so the audit log stays answerable per service.
-	App            string
+	Query          string
 	Command        string
 	Cwd            string
 	Timeout        time.Duration
@@ -439,21 +423,8 @@ type MultiExecRequest struct {
 // returns results in the order the hosts were selected.
 func (b *Broker) ExecMany(ctx context.Context, req MultiExecRequest) ([]*ExecResult, error) {
 	selected := b.FindHosts(HostQuery{Tags: req.Tags, Names: req.Hosts, Query: req.Query})
-	if req.App != "" {
-		kept := selected[:0]
-		for _, h := range selected {
-			hh, err := b.cfg.Host(h.Name)
-			if err != nil {
-				continue
-			}
-			if _, ok := hh.App(req.App); ok {
-				kept = append(kept, h)
-			}
-		}
-		selected = kept
-	}
 	if len(selected) == 0 {
-		return nil, fmt.Errorf("no hosts matched (names=%v tags=%v query=%q app=%q)", req.Hosts, req.Tags, req.Query, req.App)
+		return nil, fmt.Errorf("no hosts matched (names=%v tags=%v query=%q)", req.Hosts, req.Tags, req.Query)
 	}
 	hosts := make([]string, len(selected))
 	for i, h := range selected {
@@ -479,14 +450,13 @@ func (b *Broker) ExecMany(ctx context.Context, req MultiExecRequest) ([]*ExecRes
 			defer func() { <-sem }()
 			res, err := b.Exec(ctx, ExecRequest{
 				Host:           name,
-				App:            req.App,
 				Command:        req.Command,
 				Cwd:            req.Cwd,
 				Timeout:        req.Timeout,
 				MaxOutputBytes: req.MaxOutputBytes,
 			})
 			if res == nil {
-				res = &ExecResult{Host: name, App: req.App, Command: req.Command, ExitCode: -1, Decision: audit.DecisionDenied}
+				res = &ExecResult{Host: name, Command: req.Command, ExitCode: -1, Decision: audit.DecisionDenied}
 			}
 			if err != nil && res.Error == "" {
 				res.Error = err.Error()
@@ -724,26 +694,6 @@ func (b *Broker) resolveTarget(h *config.Host) (sshx.Target, error) {
 	}
 	t.Proxy = &proxy
 	return t, nil
-}
-
-// checkApp rejects a command that names an application the host does not run,
-// so the audit log cannot claim a connection was about the payment service when
-// it touched something else.
-func checkApp(h *config.Host, app string) error {
-	if app == "" {
-		return nil
-	}
-	if _, ok := h.App(app); ok {
-		return nil
-	}
-	names := make([]string, 0, len(h.Apps))
-	for _, a := range h.Apps {
-		names = append(names, a.Name)
-	}
-	if len(names) == 0 {
-		return fmt.Errorf("host %q has no configured applications, so it cannot be named for %q", h.Name, app)
-	}
-	return fmt.Errorf("host %q does not run %q; it runs: %s", h.Name, app, strings.Join(names, ", "))
 }
 
 func (b *Broker) runWithRetry(ctx context.Context, t sshx.Target, command, cwd string, env map[string]string, timeout time.Duration, maxBytes int) (*sshx.RunResult, error) {

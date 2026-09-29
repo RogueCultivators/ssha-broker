@@ -1,223 +1,150 @@
-# ssha configuration
+# ssha 配置
 #
-# This file is the trust boundary: it decides what an AI agent may do on which
-# server. It contains no secrets (credentials are referenced by path or read
-# from environment variables), but keep it readable only by the user who runs
-# `ssha`. It is gitignored by default; commit it only if your team agrees.
+# 一台主机最少只要：地址、用户名、登录方式，加一条备注。
+# 备注是 agent 唯一能"找"到机器的线索——它会被搜索，所以用你自己的话
+# 写清楚这台机器上跑什么。
 #
-#  Import your existing hosts:       ssha hosts import --dry-run
-#  Inspect what a host allows with:  ssha hosts show <name>
-#  Test a host end to end with:      ssha hosts test <name>
-#  Pin a host key you do not have:   ssha host-key <addr> --write
-#  Test a command without running it: ssha policy check <name> -- <command>
+#   ssha ui                  # 在浏览器里改（中文界面）
+#   ssha hosts list          # 看看有什么
+#   ssha hosts find 支付     # agent 就是这么找机器的
+#   ssha hosts test <name>   # 自检：主机密钥 + 认证 + 能否执行命令
+#   ssha hosts import        # 从 ~/.ssh/config 批量导入
 
 version: 1
 
 # ---------------------------------------------------------------------------
-# Global defaults. A host may override any policy field; overrides are merged
-# on top of these values.
+# 全局策略：所有主机生效，单台可以覆盖
+#
+#   allow     除 deny_commands 外都允许
+#   readonly  只允许 allow_commands 命中，并且拒绝 shell 元字符
+#   deny      什么都不允许
+#
+# 对不完全信任的 agent，建议默认 readonly。
 # ---------------------------------------------------------------------------
-defaults:
-  mode: allow              # allow | readonly | deny
-  timeout: 60s             # per-command wall clock limit
-  max_output_bytes: 262144  # 256 KiB of captured stdout+stderr
-
-# The default policy applied to every host. Prefer tight, per-host overrides.
 policy:
   mode: allow
-  # How much of a host's identity a caller (in practice an AI agent) may see:
-  #   full  - name, address, port, user, auth type (default)
-  #   alias - name, tags, description and policy; no address/port/user/proxy
-  #   blind - name, policy mode and limits only
-  # Credentials are never disclosed at any level.
-  disclosure: full
-  # redact_output rewrites the host address, the user name and every
-  # redact_patterns match in command output before it reaches the caller. The
-  # audit log on disk keeps the original for forensics.
-  redact_output: false
-  # redact_patterns: ['\b\d{1,3}(\.\d{1,3}){3}\b']   # e.g. any IPv4 literal
-  # Regular expressions, matched anywhere in the command. Deny always wins
-  # over allow. Deny lists are easy to bypass; for an untrusted agent prefer
-  # mode: readonly with an explicit allow list.
+  timeout: 60s
+  max_output_bytes: 262144
+  # 正则，命中即拒绝（deny 永远优先）。这些是兜底的安全网，不是防绕过的手段。
   deny_commands:
     - 'rm\s+-rf\s+/'
-    - '>\s*/dev/sd'
     - '\bmkfs\b'
     - '\b(shutdown|reboot|poweroff)\b'
-    - '\bchmod\s+-R\s+000\s+/'
-    - '\biptables\s+-F\b'
-  # Remote paths that may not be uploaded to or downloaded from.
-  deny_paths:
-    - '^/etc/shadow$'
-    - '/\.ssh/id_'
 
 # ---------------------------------------------------------------------------
-# Audit log. Append-only JSON Lines with a SHA-256 hash chain.
-# Verify it with:  ssha audit verify
+# 审计：每条命令一行 JSON，带 SHA-256 哈希链
+# 校验：ssha audit verify      查询：ssha audit ls --host x
 # ---------------------------------------------------------------------------
 audit:
   path: ~/.local/share/ssha/audit.jsonl
-  store_output: true       # record stdout/stderr in the log
-  max_field_bytes: 65536   # truncate each stored stream at 64 KiB
+  store_output: true
+  max_field_bytes: 65536
 
 # ---------------------------------------------------------------------------
-# HTTP MCP transport (`ssha mcp --http`). Tokens scope a client to a subset of
-# hosts. Without tokens, `ssha mcp --http` refuses any non-loopback address.
+# 给 agent 用的 MCP 服务（可选）
+#   ssha mcp                      本机 stdio，给 Codex / pi / Claude Code
+#   ssha mcp --http 0.0.0.0:8765  局域网，必须配 token，否则拒绝启动
 # ---------------------------------------------------------------------------
-server:
-  http_addr: 127.0.0.1:8765
-  # tokens:
-  #   - name: ci
-  #     value_env: SSHA_TOKEN_CI
-  #     tags: [staging]
-  #   - name: oncall
-  #     value_env: SSHA_TOKEN_ONCALL
-  #     hosts: ["web-*", "db-*"]
+# server:
+#   http_addr: 127.0.0.1:8765
+#   tokens:
+#     - name: my-agent
+#       value_env: SSHA_TOKEN_AGENT
+#       tags: [staging]              # 这个 token 只够得着这些主机
 
-# ---------------------------------------------------------------------------
-# Hosts
-# ---------------------------------------------------------------------------
 hosts:
-  # A read-only production host: the agent may only look, never touch.
+  # -------------------------------------------------------------------------
+  # 最小写法：地址 + 用户名 + 登录方式 + 备注
+  # -------------------------------------------------------------------------
   - name: prod-web
-    description: Public web frontend (nginx). Read-only for agents.
     addr: 10.0.0.10
-    port: 22
     user: deploy
-    tags: [prod, web]
+    description: |
+      公网 Web 前端，nginx 反向代理。
+      后面是 checkout-api：systemd 单元 checkout-api.service，端口 8080，
+      日志 /var/log/checkout/api.log，重启会先 drain 在途请求。
+    auth:
+      type: key                     # key | agent | password
+      key_path: ~/.ssh/id_ed25519
+      # 加密私钥的口令来源（环境变量优先，其次文件，最后 CLI 交互输入）
+      # passphrase_env: SSHA_KEY_PASSPHRASE
+      # passphrase_file: ~/.config/ssha/id_ed25519.pass
+      # key_env: SSHA_PRIVATE_KEY    # 直接放 PEM 内容，CI 用
+
+  # -------------------------------------------------------------------------
+  # 只读：agent 只能看，不能改
+  # -------------------------------------------------------------------------
+  - name: prod-db
+    addr: 10.0.0.20
+    user: dba
+    description: 主数据库。只读巡检用，不要在这里写任何东西。
     auth:
       type: key
       key_path: ~/.ssh/id_ed25519
-      # An encrypted key: give the passphrase a source (env wins, then file,
-      # then an interactive prompt from the CLI).
-      # passphrase_env: SSHA_KEY_PASSPHRASE
-      # passphrase_file: ~/.config/ssha/id_ed25519.pass
-      # In CI you may prefer to keep no key on disk at all:
-      # key_env: SSHA_PRIVATE_KEY
-    host_key:
-      known_hosts: ~/.ssh/known_hosts
-      # fingerprints: ["SHA256:abc123..."]   # alternative to known_hosts
-      # insecure: false                       # never enable in production
-    work_dir: /srv/app
-    # What runs here. An agent asked to fix "the checkout service" finds this
-    # host by searching for it, so name the systemd unit and the log paths it
-    # needs. Nothing secret belongs in an app entry.
-    apps:
-      - name: nginx
-        description: Reverse proxy for the public site
-        kind: web
-        unit: nginx.service
-        ports: [80, 443]
-        logs: [/var/log/nginx/error.log]
-        path: /etc/nginx
-        tags: [edge]
-      - name: checkout-api
-        description: Checkout service; restart drains in-flight requests first
-        kind: api
-        unit: checkout-api.service
-        ports: [8080]
-        logs: [/var/log/checkout/api.log]
-        path: /srv/checkout
-        tags: [critical, team-payments]
-        runbook: https://runbooks.example.com/checkout
     policy:
       mode: readonly
-      # readonly rejects shell metacharacters by default (; | & < > ` newline
-      # $(...)) so that `ls; rm -rf /tmp` cannot pass a `^ls` rule. Set this to
-      # true only if you need pipelines inside the allow list.
+      # readonly 默认拒绝 shell 元字符（; | & < > 反引号 换行 $(），
+      # 一条命令只能是一个简单命令。需要管道就打开这个开关，并清楚代价。
       allow_shell_metacharacters: false
       allow_commands:
         - '^ls\b'
         - '^cat\b'
-        - '^tail\b'
-        - '^head\b'
-        - '^grep\b'
         - '^df\b'
         - '^free\b'
         - '^uptime\b'
         - '^ps\b'
         - '^systemctl\s+status\b'
         - '^journalctl\b'
-        - '^docker\s+(ps|logs|inspect)\b'
-      timeout: 30s
-      max_output_bytes: 131072
 
-  # A staging host reachable only through a bastion.
-  - name: staging-app
-    description: Staging application server, reached via the bastion.
-    addr: 10.1.0.20
-    user: deploy
-    tags: [staging, app]
-    proxy_jump: bastion
+  # -------------------------------------------------------------------------
+  # 密码登录：密码放文件或环境变量，不写在配置里
+  #   install -m 600 /dev/null ~/.config/ssha/legacy.pass
+  #   read -rs -p 'password: ' P && printf '%s\n' "$P" > ~/.config/ssha/legacy.pass
+  #
+  # 两者都不配的话，CLI 会交互式提问；但 MCP 不会提问，会直接报错。
+  # -------------------------------------------------------------------------
+  - name: legacy
+    addr: 10.0.0.30
+    user: root
+    description: 老机器，只跑一个定时任务。密码登录。
     auth:
-      type: key
-      key_path: ~/.ssh/id_ed25519
-    host_key:
-      known_hosts: ~/.ssh/known_hosts
-    work_dir: /srv/app
-    env:
-      APP_ENV: staging
-    policy:
-      mode: allow
-      deny_commands:
-        - 'rm\s+-rf\s+/'
-        - '\bmkfs\b'
-      timeout: 120s
+      type: password
+      password_file: ~/.config/ssha/legacy.pass
+      # password_env: SSHA_LEGACY_PASSWORD    # 优先级更高
 
+  # -------------------------------------------------------------------------
+  # 跳板机：agent 不该在它上面执行任何东西
+  # -------------------------------------------------------------------------
   - name: bastion
-    description: Jump host. Not a command target.
     addr: bastion.example.com
     user: jump
-    tags: [infra]
+    description: 跳板机，只用来中转。
     auth:
-      type: agent          # use the local ssh-agent: no key file on disk
-    host_key:
-      known_hosts: ~/.ssh/known_hosts
-    policy:
-      mode: deny           # agents must not run commands on the bastion itself
-
-  # Example: everything the agent is told is deliberately vague. It can use the
-  # host by name, but the address, the port, the account and anything matching
-  # redact_patterns are kept out of tool results. The audit log still records
-  # the real text for the operator (`ssha audit ls --reveal`).
-  - name: customer-vm-42
-    description: A customer instance. Identity is withheld from agents.
-    addr: 203.0.113.42
-    port: 2222
-    user: svc-ops
-    tags: [customer]
-    auth:
-      type: password
-      password_file: ~/.config/ssha/customer-42.pass
-    host_key:
-      fingerprints: ["SHA256:replace-me"]
-    policy:
-      mode: readonly
-      disclosure: alias
-      redact_output: true
-      redact_patterns:
-        - '\b\d{1,3}(\.\d{1,3}){3}\b'   # hide any other IPv4 that shows up
-      allow_commands:
-        - '^uptime\b'
-        - '^df\b'
-        - '^systemctl\s+status\b'
-
-  # A host that authenticates with a password. The password never belongs in
-  # this file. Prefer password_file for anything an agent will reach over MCP,
-  # because MCP clients start ssha with their own environment.
-  - name: legacy-db
-    description: Legacy database host, password auth.
-    addr: 10.0.0.30
-    user: dba
-    tags: [db]
-    auth:
-      type: password
-      # password_file: ~/.config/ssha/legacy-db.pass   # one line, mode 0600
-      # password_env: SSHA_LEGACY_DB_PASSWORD         # takes precedence
-      #
-      # With neither set, the CLI prompts for the password when stdin is a
-      # terminal. The MCP server never prompts and reports an error instead.
-    host_key:
-      insecure: true       # TODO: pin the fingerprint instead
+      type: agent                   # 走本地 ssh-agent，磁盘上不放私钥
     policy:
       mode: deny
+
+# ---------------------------------------------------------------------------
+# 可选项速查（按需打开）
+#
+#   tags: [prod, web]                     # 分组，配合 ssha hosts list --tag prod
+#   port: 2222                            # 非 22 端口
+#   work_dir: /srv/app                    # 默认工作目录
+#   env: { APP_ENV: prod }                # 默认环境变量
+#   proxy_jump: bastion                   # 通过另一台主机（写它的 name）
+#   disabled: true                        # 留在文件里但永不被选中
+#
+#   host_key:                             # 主机密钥校验，默认 fail-closed
+#     known_hosts: ~/.ssh/known_hosts     # 不给就用 ~/.ssh/known_hosts
+#     fingerprints: ["SHA256:..."]        # 或者直接钉指纹
+#     insecure: true                      # 关掉校验，仅测试
+#
+#   policy:                               # 单台覆盖全局策略
+#     mode: allow|readonly|deny
+#     timeout: 30s
+#     max_output_bytes: 131072
+#     deny_paths: ['^/etc/shadow$']       # 禁止上传/下载的路径
+#     disclosure: full|alias|blind        # 给 agent 看多少身份信息
+#     redact_output: true                 # 输出里的地址/用户名换成 <host>/<user>
+#     redact_patterns: ['\b\d{1,3}(\.\d{1,3}){3}\b']
+# ---------------------------------------------------------------------------

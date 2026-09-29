@@ -61,12 +61,8 @@ type Record struct {
 	Machine string `json:"machine,omitempty"`
 	Agent   *Agent `json:"agent,omitempty"`
 
-	Type string `json:"type"`
-	Host string `json:"host"`
-	// App is the workload the caller said it was operating on. It is checked
-	// against the host's apps before the command runs, so the log answers
-	// "what has been done to the checkout service?" and not just "on which host".
-	App     string `json:"app,omitempty"`
+	Type    string `json:"type"`
+	Host    string `json:"host"`
 	Command string `json:"command,omitempty"`
 	Path    string `json:"path,omitempty"`
 	Cwd     string `json:"cwd,omitempty"`
@@ -220,7 +216,6 @@ func lastLine(f *os.File) ([]byte, error) {
 // Filter selects records for Query.
 type Filter struct {
 	Host      string
-	App       string
 	Type      string
 	Decision  string
 	SessionID string
@@ -229,9 +224,6 @@ type Filter struct {
 
 func (f Filter) match(r *Record) bool {
 	if f.Host != "" && r.Host != f.Host {
-		return false
-	}
-	if f.App != "" && !strings.EqualFold(r.App, f.App) {
 		return false
 	}
 	if f.Type != "" && r.Type != f.Type {

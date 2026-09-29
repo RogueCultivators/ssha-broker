@@ -103,7 +103,7 @@ func Run(ctx context.Context, opts Options) error {
 	// take would send the operator to whatever else is listening there.
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("cannot listen on %s: %w", addr, err)
+		return fmt.Errorf("无法监听 %s：%w", addr, err)
 	}
 
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -116,10 +116,10 @@ func Run(ctx context.Context, opts Options) error {
 
 	url := "http://" + ln.Addr().String() + "/?token=" + token
 	fmt.Fprintf(os.Stderr,
-		"ssha ui\n"+
-			"  config: %s\n"+
+		"ssha 配置界面\n"+
+			"  配置文件：%s\n"+
 			"\n"+
-			"  Open this URL in a browser (the token is required and changes every run):\n"+
+			"  用浏览器打开下面这条地址（token 必须带，每次启动都会变）：\n"+
 			"    %s\n\n", s.cfgPath, url)
 	if opts.Open {
 		openBrowser(url)
@@ -180,7 +180,7 @@ func requireLoopback(addr string) error {
 	}
 	ip := net.ParseIP(host)
 	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("refusing to serve the editor on %s: it would let anything on the network rewrite the ssha config; use 127.0.0.1 or tunnel it", addr)
+		return fmt.Errorf("拒绝把界面绑到 %s：那等于让网络上的任何人改你的 ssha 配置。请用 127.0.0.1，或者走 SSH 端口转发", addr)
 	}
 	return nil
 }
@@ -315,26 +315,26 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 }
 
 // hostWarnings flags the mistakes that silently make a host useless: no host
-// key pinned, no password source, a jump host that is itself unreachable.
+// key pinned, no password source, a host that would block every command.
 func hostWarnings(h *config.Host, spec config.Spec) []string {
 	var out []string
 	if h.Auth.Type == "password" && h.Auth.PasswordEnv == "" && h.Auth.PasswordFile == "" {
-		out = append(out, "no password source: the CLI will prompt interactively, but an agent over MCP will fail. Set password_env or password_file.")
+		out = append(out, "密码没有来源：命令行会交互式提问，但 agent 走 MCP 时会直接失败。请填密码文件或密码环境变量。")
 	}
 	if h.Auth.Type == "key" && h.Auth.KeyPath == "" && h.Auth.KeyEnv == "" {
-		out = append(out, "auth.type is key but no key_path or key_env is set.")
+		out = append(out, "认证类型是私钥，但没有填私钥路径，也没有填私钥内容的环境变量。")
 	}
 	if len(h.HostKey.Fingerprints) == 0 && h.HostKey.KnownHosts == "" && !h.HostKey.Insecure {
-		out = append(out, "no host key pinned: known_hosts defaults to ~/.ssh/known_hosts; if the host is not in it, the connection is refused (use host-key scan).")
+		out = append(out, "没有钉主机密钥：默认会去读 ~/.ssh/known_hosts，里面没有这台机器就会被拒绝连接（可以用“扫描主机密钥”）。")
 	}
 	if h.HostKey.Insecure {
-		out = append(out, "host_key.insecure is on: the server identity is not verified.")
+		out = append(out, "已打开 insecure：不校验服务器身份。仅测试用。")
 	}
 	if spec.Mode == config.ModeReadonly && len(spec.Allow) == 0 {
-		out = append(out, "policy mode readonly with an empty allow list would block everything.")
+		out = append(out, "策略是 readonly 但白名单是空的，等于什么都跑不了。")
 	}
 	if spec.RedactOutput && spec.Disclosure == config.DisclosureFull {
-		out = append(out, "redact_output hides the address in output, but disclosure full still shows the address in ssh_list_hosts.")
+		out = append(out, "遮蔽了输出里的地址，但身份可见度还是 full，主机清单里依然能看到地址。")
 	}
 	return out
 }
@@ -346,7 +346,7 @@ func hostWarnings(h *config.Host, spec config.Spec) []string {
 func (s *server) handleHosts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
-		writeErr(w, http.StatusMethodNotAllowed, errors.New("use POST"))
+		writeErr(w, http.StatusMethodNotAllowed, errors.New("请用 POST"))
 		return
 	}
 	var h config.Host
@@ -355,7 +355,7 @@ func (s *server) handleHosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.Name == "" {
-		writeErr(w, http.StatusBadRequest, errors.New("name is required"))
+		writeErr(w, http.StatusBadRequest, errors.New("名称不能为空"))
 		return
 	}
 	if err := config.UpsertHost(s.cfgPath, h); err != nil {
@@ -373,7 +373,7 @@ func (s *server) handleHosts(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleHost(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/hosts/")
 	if name == "" {
-		writeErr(w, http.StatusBadRequest, errors.New("host name is required"))
+		writeErr(w, http.StatusBadRequest, errors.New("需要主机名称"))
 		return
 	}
 	switch r.Method {
@@ -390,7 +390,7 @@ func (s *server) handleHost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	default:
 		w.Header().Set("Allow", "DELETE")
-		writeErr(w, http.StatusMethodNotAllowed, errors.New("use DELETE"))
+		writeErr(w, http.StatusMethodNotAllowed, errors.New("请用 DELETE"))
 	}
 }
 
@@ -418,7 +418,7 @@ func (s *server) handleHostKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if in.Addr == "" {
-		writeErr(w, http.StatusBadRequest, errors.New("addr is required"))
+		writeErr(w, http.StatusBadRequest, errors.New("需要填地址"))
 		return
 	}
 	if in.Port == 0 {
@@ -557,7 +557,7 @@ func (s *server) handleSSHConfigImport(w http.ResponseWriter, r *http.Request) {
 	switch in.PolicyMode {
 	case config.ModeDeny, config.ModeReadonly, config.ModeAllow:
 	default:
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("policy_mode must be deny, readonly or allow, got %q", in.PolicyMode))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("policy_mode 只能是 deny、readonly 或 allow，收到 %q", in.PolicyMode))
 		return
 	}
 
@@ -582,7 +582,7 @@ func (s *server) handleSSHConfigImport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(entries) == 0 {
-		writeErr(w, http.StatusBadRequest, errors.New("no hosts were selected"))
+		writeErr(w, http.StatusBadRequest, errors.New("没有选中任何主机"))
 		return
 	}
 

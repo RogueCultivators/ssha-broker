@@ -97,7 +97,12 @@ audit:
   store_output: true
 hosts:
   - name: testbox
-    description: read-only test container
+    # The note is what an agent searches, so it carries the operational detail:
+    # what runs here, the unit names and the log paths.
+    description: |
+      read-only test container. Runs payment-api (systemd unit
+      payment-api.service, port 8080, log /var/log/payment/api.log) behind
+      nginx, for the checkout flow. Owned by team-payments.
     addr: 127.0.0.1
     port: $PORT
     user: root
@@ -105,21 +110,6 @@ hosts:
     auth: {type: key, key_path: $WORK/id_ed25519}
     host_key: {known_hosts: $WORK/known_hosts}
     work_dir: /tmp
-    apps:
-      - name: payment-api
-        description: handles card payments
-        kind: api
-        unit: payment-api.service
-        ports: [8080]
-        logs: [/var/log/payment/api.log]
-        path: /srv/payment
-        tags: [team-payments, critical]
-        runbook: https://runbooks.example.com/payment
-      - name: nginx
-        description: reverse proxy
-        kind: web
-        unit: nginx.service
-        ports: [80, 443]
     policy:
       mode: readonly
       allow_commands:
@@ -191,57 +181,29 @@ if grep -q "  testbox  " <<<"$out"; then fail "tag filter leaked testbox"; else 
 "$BIN" policy check testbox-rw -- 'mkdir -p /tmp/x' >/dev/null; check "policy allows mkdir on rw host" 0 $?
 
 # ---------------------------------------------------------------------------
-log "cli: discovery (which host runs what)"
+log "cli: discovery (find a host by what it says about itself)"
 
-out=$("$BIN" hosts find payment); check "hosts find by app name" 0 $?
-contains "the app's host is found" "testbox" "$out"
-contains "the app is reported with its unit" "payment-api" "$out"
+out=$("$BIN" hosts find payment); check "find by a word from the note" 0 $?
+contains "the host is found" "testbox" "$out"
+contains "the note is shown in the table" "payment-api" "$out"
 
-out=$("$BIN" hosts find team-payments); contains "app tags are searchable" "testbox" "$out"
-out=$("$BIN" hosts find "runbooks.example.com"); contains "app runbook is searchable" "testbox" "$out"
+out=$("$BIN" hosts find team-payments); contains "the note is searchable by team" "testbox" "$out"
+out=$("$BIN" hosts find "systemd unit"); contains "a multi-word phrase works" "testbox" "$out"
 out=$("$BIN" hosts find nosuchservice); check "an unmatched query is not an error" 0 $?
 contains "an unmatched query says so" "no host matches" "$out"
 
 out=$("$BIN" hosts list --json --query payment)
 count=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])' <<<"$out")
 [ "$count" = "1" ] && pass "--query filters the host list" || fail "--query matched $count hosts, want 1"
-contains "the json carries the app metadata" "payment-api.service" "$out"
+contains "the json carries the note" "payment-api.service" "$out"
 
 out=$("$BIN" hosts show testbox)
-contains "hosts show lists the applications" "applications" "$out"
-contains "hosts show lists the systemd unit" "unit=payment-api.service" "$out"
-contains "hosts show lists the log path" "logs=/var/log/payment/api.log" "$out"
+contains "hosts show prints the note" "payment-api.service" "$out"
+contains "hosts show prints the log path" "/var/log/payment/api.log" "$out"
 
-out=$("$BIN" multi --query payment -- whoami); check "multi --query selects by app" 0 $?
+out=$("$BIN" multi --query payment -- whoami); check "multi --query selects by the note" 0 $?
 contains "only the matching host ran" "testbox" "$out"
-if grep -q "testbox-rw" <<<"$out"; then fail "multi --query was too broad"; else pass "multi --query did not include other hosts"; fi
-
-# ---------------------------------------------------------------------------
-log "cli: app-scoped commands and audit"
-
-out=$("$BIN" run testbox --app payment-api -- whoami); check "run --app on a host that runs it" 0 $?
-contains "the command still ran" "root" "$out"
-
-out=$("$BIN" run testbox --app nosuchapp -- whoami 2>&1); code=$?
-check "run --app with an unknown app is refused" 1 "$code"
-contains "the refusal lists what the host actually runs" "payment-api" "$out"
-if grep -q "root$" <<<"$out"; then fail "the refused command ran anyway"; else pass "the refused command did not run"; fi
-
-out=$("$BIN" run testbox --app payment-api --json -- whoami)
-contains "the app is echoed on the result" '"app": "payment-api"' "$out"
-
-out=$("$BIN" audit ls --app payment-api --json)
-contains "audit filters by app" '"app": "payment-api"' "$out"
-out=$("$BIN" audit ls --app nosuchapp --json)
-count=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])' <<<"$out")
-[ "$count" = "0" ] && pass "an unused app has no records" || fail "expected no records, got $count"
-
-out=$("$BIN" multi --app nginx -- whoami); check "multi --app selects the hosts running it" 0 $?
-contains "multi --app reached testbox" "testbox" "$out"
-if grep -q "testbox-rw" <<<"$out"; then fail "multi --app was too broad"; else pass "multi --app excluded hosts without the app"; fi
-
-out=$("$BIN" multi --app nginx --json -- whoami)
-contains "multi records the app against each command" '"app": "nginx"' "$out"
+if printf '%s' "$out" | grep -q "testbox-rw" <<<"$out"; then fail "multi --query was too broad"; else pass "multi --query did not include other hosts"; fi
 
 # ---------------------------------------------------------------------------
 log "cli: auth methods"
@@ -587,18 +549,18 @@ for _ in $(seq 1 40); do grep -q 'token=' "$WORK/ui.log" && break; sleep 0.25; d
 TOKEN=$(grep -o 'token=[a-f0-9]*' "$WORK/ui.log" | head -1 | cut -d= -f2)
 [ -n "$TOKEN" ] && pass "the editor prints a tokenised url" || fail "no token in: $(cat "$WORK/ui.log")"
 
-contains "the startup output says which url to open" "Open this URL in a browser" "$(cat "$WORK/ui.log")"
+contains "the startup output says which url to open" "用浏览器打开下面这条地址" "$(cat "$WORK/ui.log")"
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$UI_PORT/")
 [ "$code" = "200" ] && pass "the editor page is served" || fail "index returned $code"
 curl -s "http://127.0.0.1:$UI_PORT/" > "$WORK/page.html"
-contains "the page explains the token to a visitor who lacks one" "needs the token from the command line" "$(cat "$WORK/page.html")"
+contains "the page explains the token to a visitor who lacks one" "这个界面需要命令行里那个 token" "$(cat "$WORK/page.html")"
 
 # A port we cannot take must fail loudly. Printing a URL for a port somebody
 # else owns would send the operator to the wrong server.
 out=$("$BIN" -c "$WORK/ui.yaml" ui --addr 127.0.0.1:$UI_PORT 2>&1); code=$?
 check "a taken port is reported instead of printing a wrong url" 1 "$code"
-contains "the bind failure is explicit" "cannot listen on" "$out"
-grep -q "systemd unit" <<<"$(cat "$WORK/page.html")" && pass "the page embeds the application editor" || fail "the page looks wrong"
+contains "the bind failure is explicit" "无法监听" "$out"
+grep -q "备注" <<<"$(cat "$WORK/page.html")" && pass "the page is the editor (and speaks Chinese)" || fail "the page looks wrong"
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$UI_PORT/api/state")
 [ "$code" = "401" ] && pass "the api refuses a request without the token" || fail "the api returned $code without a token"
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-SSHA-Token: wrong" "http://127.0.0.1:$UI_PORT/api/state")
@@ -615,17 +577,16 @@ out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' -X P
   "name": "ui-made",
   "addr": "10.9.9.9",
   "user": "deploy",
-  "description": "made by the editor",
+  "description": "编辑器的测试机器。跑 billing-api。",
   "tags": ["ui"],
-  "apps": [{"name": "billing", "kind": "api", "unit": "billing.service", "ports": [9000]}],
   "auth": {"type": "key", "key_path": "/tmp/k"}
 }'); check "the editor creates a host" 0 $?
 contains "creation is acknowledged" "ui-made" "$out"
 contains "the host landed in the file" "name: ui-made" "$(cat "$WORK/ui.yaml")"
-contains "its app landed too" "unit: billing.service" "$(cat "$WORK/ui.yaml")"
+contains "its note landed too" "跑 billing-api" "$(cat "$WORK/ui.yaml")"
 after_comments=$(grep -c '^[[:space:]]*#' "$WORK/ui.yaml")
 [ "$before_comments" = "$after_comments" ] && pass "all $after_comments comments survived the edit" || fail "comments went from $before_comments to $after_comments"
-contains "an untouched host kept its nested comments" "# An encrypted key" "$(cat "$WORK/ui.yaml")"
+contains "an untouched host kept its nested comments" "# 加密私钥的口令来源" "$(cat "$WORK/ui.yaml")"
 if grep -qP '[ \t]+$' "$WORK/ui.yaml"; then fail "the editor left trailing whitespace"; else pass "no trailing whitespace was left behind"; fi
 
 # Editing an existing host must not drop the fields the editor did not send.
@@ -634,6 +595,8 @@ contains "an existing host can be edited" "prod-web" "$out"
 out=$("$BIN" -c "$WORK/ui.yaml" hosts show prod-web --json)
 contains "the edit took effect" "edited" "$out"
 contains "the policy override took effect" '"policy_mode": "allow"' "$out"
+out=$("$BIN" -c "$WORK/ui.yaml" hosts find ui-made)
+contains "a host created by the editor is searchable by its note" "ui-made" "$out"
 
 # The rejected edit must not corrupt the file.
 out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' -X POST "http://127.0.0.1:$UI_PORT/api/hosts" -d '{"name":"broken","auth":{"type":"key"}}')
@@ -651,7 +614,7 @@ wait $UI_PID 2>/dev/null
 
 out=$("$BIN" -c "$WORK/ui.yaml" ui --addr 0.0.0.0:$(( BASE_PORT + 1 )) 2>&1); code=$?
 check "the editor refuses a non-loopback address" 1 "$code"
-contains "the refusal explains itself" "rewrite the ssha config" "$out"
+contains "the refusal explains itself" "拒绝把界面绑到" "$out"
 
 # A persisted token is what makes a bookmarked URL survive a service restart.
 PERSIST_PORT=$(( BASE_PORT + 4 ))

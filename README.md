@@ -45,8 +45,7 @@ codex / pi / claude / cursor ─────┐         │                    �
 | readonly 绕过 | — | 默认拒绝 shell 元字符，`ls; rm -rf /tmp` 无法匹配 `^ls` |
 | 审计 | 日志文本 | 每条命令结构化记录 + SHA-256 哈希链，`ssha audit verify` 可检测篡改 |
 | 工具数量 | 动辄 30+ | 7 个，面向模型选择准确率设计 |
-| 服务发现 | 只有 IP 列表，模型得猜哪台跑什么 | 每个主机可描述 `apps`（systemd 单元、端口、日志、runbook），`ssh_list_hosts --query payment` 直接定位到机器和单元 |
-| 按服务追溯 | — | 命令可声明 `--app checkout-api`，声明会被校验并写进审计；`ssha audit ls --app checkout-api` 回答「这个服务被做过什么」 |
+| 服务发现 | 只有 IP 列表，模型得猜哪台跑什么 | 每台机器一条自由文本**备注**（跑什么、单元名、日志路径），`ssh_list_hosts --query payment` 直接定位到机器 |
 | 主机身份 | agent 直连，地址/账号全暴露 | `disclosure` + `redact_output` 可只给别名，输出、错误、审计里的地址/账号全部换成 `<host>`/`<user>` |
 | 超时/输出上限 | agent 说了算 | 策略设上限，agent 只能收紧不能放宽 |
 | 多主机 | 逐个 | `ssh_exec_many` 按 tag 并行下发 |
@@ -82,7 +81,7 @@ ssha ui                       # 或者用本地网页编辑器填（推荐，见
 ssha host-key 10.0.0.10       # 扫描并钉住主机密钥（没有 known_hosts 时用）
 ssha hosts list               # 确认能读到主机
 ssha hosts find payment       # 哪台机器跑 payment 相关的东西？
-ssha hosts show prod-web      # 看这一台机器到底允许什么（含它的应用）
+ssha hosts show prod-web      # 看这台机器的备注和策略
 ssha hosts test prod-web      # 自检：主机密钥 + 认证 + 能否执行命令
 ssha policy check prod-web -- systemctl restart nginx   # 空跑，不执行不审计
 ssha run prod-web -- systemctl status nginx
@@ -134,56 +133,36 @@ hosts:
   （会把服务器实际提供的指纹和 known_hosts 里的都打印出来）。
 - `proxy_jump` 支持一层跳板机，跳板机自身也可以有独立策略（通常设成 `deny`）。
 
-#### 主机上跑什么：`apps`
+#### 备注就是 agent 的索引
 
-这是让模型「找得到东西」的关键。agent 接到「支付服务报错了」，它需要的不是 IP，而是
-**哪台机器 + 哪个 systemd 单元 + 哪个日志文件**：
+每台机器只有一个自由文本字段：**备注**（`description`）。没有 apps、没有结构化字段、
+没有需要维护的目录。写你自己的话：
 
 ```yaml
-    apps:
-      - name: checkout-api                    # 搜索命中靠它
-        description: 结算服务；重启会先 drain 在途请求
-        kind: api                             # web / api / worker / cron / db / cache …
-        unit: checkout-api.service            # 直接能做 systemctl status
-        ports: [8080]
-        logs: [/var/log/checkout/api.log]
-        path: /srv/checkout
-        tags: [critical, team-payments]
-        runbook: https://runbooks.example.com/checkout
+  - name: prod-web
+    addr: 10.0.0.10
+    user: deploy
+    description: |
+      公网 Web 前端，nginx 反代。
+      后面是 checkout-api：systemd 单元 checkout-api.service，端口 8080，
+      日志 /var/log/checkout/api.log，重启会先 drain 在途请求，负责人 team-payments。
+    auth:
+      type: key
+      key_path: ~/.ssh/id_ed25519
 ```
 
-然后是检索（名字、描述、主机 tag、应用的每个字段、端口、日志路径都可搜，多个词是 AND）：
+检索覆盖**名称 + 备注 + 标签**，多个词是 AND：
 
 ```bash
-ssha hosts find payment          # 命中 checkout-api 所在的主机
+ssha hosts find payment          # 命中备注里写到 payment 的那台
+ssha hosts find "systemd unit"
 ssha hosts find team-payments
-ssha hosts find /var/log/checkout
-ssha hosts list --query payment --json
+ssha hosts list --query 8080
 ssha multi --query checkout -- systemctl status checkout-api
 ```
 
 对应的 MCP 工具是 `ssh_list_hosts({"query": "payment"})`，描述里明确写了
-「用 query 找服务在哪台机器」。所以 skill 的第一步不再是「列主机」，而是「找服务」。
-
-#### 让每条命令带上应用上下文
-
-agent 可以（也应该）声明这条命令是为哪个应用做的。这个声明会被**校验**并写进审计记录：
-
-```bash
-ssha run prod-web --app checkout-api -- systemctl status checkout-api
-ssha multi --app checkout-api -- systemctl restart checkout-api
-ssha audit ls --app checkout-api          # 这个服务到底被做过什么
-```
-
-声明一个这台机器上并不存在的应用会被**拒绝**，并把该机器实际跑的应用列出来：
-
-```
-$ ssha run prod-web --app payment -- systemctl status nginx
-ssha: host "prod-web" does not run "payment"; it runs: nginx, checkout-api
-```
-
-所以审计里的 `app` 字段是可信的：模型不能为了「看起来在做正事」而随便贴一个标签。
-这是把「哪台机器」和「哪个服务」两个维度都变成可追溯的关键。
+「用 query 搜备注」。所以 skill 的第一步不是「列主机」，而是「按备注找机器」。
 
 ### 4.2 策略 `policy`
 
@@ -422,10 +401,12 @@ ssha ui --token-file ~/.local/state/ssha/ui.token   # token 跨重启不变，UR
 
 它做四件事：
 
-- **主机清单 + 搜索**：左边可以按名字、描述、tag、**应用**搜索，一眼看出哪些主机是 readonly、
-  哪些对模型隐藏了身份、哪些有配置问题（带 ⚠ 标记）。
-- **表单化编辑**：主机信息、应用目录、认证方式、主机密钥、策略覆盖都有对应字段，不用记 YAML 键名。
-  认证区只让你填**来源**（`password_file` / `password_env`）——密码本身永远不进浏览器。
+- **界面是全中文的**（命令行、skill、MCP 仍然是英文，那是给机器看的）。
+- **主机清单 + 搜索**：按名字或备注搜索，一眼看出哪些主机是 readonly、哪些对模型隐藏了身份、
+  哪些有配置问题（带 ⚠）。
+- **表单默认只有 SSH 配置 + 备注**：名称、地址、端口、用户名、登录方式、备注。主机密钥、策略覆盖、
+  跳板机、标签、遮蔽这些收在「高级设置」折叠区里，不打开就不会看到。
+  认证区只让你填**来源**（密码文件 / 环境变量）——密码本身永远不进浏览器。
 - **配置体检**：打开一台主机就会提示「没有钉主机密钥」「password 没有来源，MCP 会失败」
   「`redact_output` 开了但 `disclosure` 还是 `full`，地址照样会从清单里漏出去」这类问题。
 - **连接自检 + 主机密钥扫描**：点一下就能测连通性并看到协商到的指纹；扫描到的指纹可以一键填进
@@ -654,12 +635,12 @@ ssha hosts import [--file PATH] [--policy-mode deny|readonly|allow] [--only GLOB
 ssha hosts show <name>
 ssha hosts test <name>... | --tag T | --all [--probe CMD] [--json]
 ssha host-key <name|addr>[:port] [--port N] [--known-hosts PATH] [--write] [--timeout 10s] [--json]
-ssha run <host> [--app NAME] [--cwd DIR] [-e K=V] [--timeout 30s] [--max-output N] [--dry-run] [--json] [--] <cmd>
-ssha multi [--host H]... [--tag T]... [--query TEXT] [--app NAME] [--concurrency N] [--] <cmd>
+ssha run <host> [--cwd DIR] [-e K=V] [--timeout 30s] [--max-output N] [--dry-run] [--json] [--] <cmd>
+ssha multi [--host H]... [--tag T]... [--query TEXT] [--concurrency N] [--] <cmd>
 ssha upload <host> <local|-> <remote> [--mode 0644]
 ssha download <host> <remote> <local|-> [--max-bytes N]
 ssha policy check <host> [--] <cmd>
-ssha audit ls [--host H] [--app NAME] [--type exec|upload|download] [--decision allowed|denied] [--limit N] [--since 1h]
+ssha audit ls [--host H] [--type exec|upload|download] [--decision allowed|denied] [--limit N] [--since 1h]
 ssha audit show <id>
 ssha audit verify
 ssha mcp [--http ADDR] [--verbose]
@@ -706,7 +687,7 @@ internal/policy/          策略编译与判定（含基线拦截、元字符规
 internal/audit/           JSONL + 哈希链审计，flock 并发安全
 internal/sshx/            x/crypto/ssh 封装：连接池、执行、SFTP、ProxyJump、主机密钥校验/扫描
 internal/broker/          核心：串起 config + policy + audit + sshx（CLI / MCP / UI 共用）
-                          含应用检索与身份遮蔽
+                          含备注检索与身份遮蔽
 internal/mcpsrv/          MCP server（7 个工具）+ HTTP token 作用域
 internal/cli/             命令行
 internal/ui/              本地配置编辑器（嵌入式单页，无构建步骤）

@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ssha · config</title>
+<title>ssha · 配置</title>
 <style>
   :root {
     color-scheme: dark light;
@@ -17,7 +17,7 @@
     --ok: #5ec98a;
     --warn: #e0b34e;
     --bad: #e06c75;
-    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
   }
   @media (prefers-color-scheme: light) {
     :root {
@@ -29,7 +29,7 @@
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font: 14px/1.6 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   }
   header {
     display: flex; align-items: baseline; gap: 12px;
@@ -39,7 +39,7 @@
   header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }
   header .path { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   header .status { margin-left: auto; font-size: 12px; color: var(--muted); }
-  .layout { display: grid; grid-template-columns: minmax(240px, 300px) 1fr; height: calc(100vh - 45px); }
+  .layout { display: grid; grid-template-columns: minmax(250px, 310px) 1fr; height: calc(100vh - 46px); }
   aside { border-right: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 12px; }
   main { overflow: auto; padding: 16px 20px 60px; }
 
@@ -50,7 +50,7 @@
   }
   input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   textarea { font-family: var(--mono); font-size: 12.5px; min-height: 62px; resize: vertical; }
-  input[type=checkbox] { width: auto; }
+  input[type=checkbox] { width: auto; flex: none; }
   button {
     padding: 6px 12px; background: var(--panel-2); border: 1px solid var(--line);
     border-radius: 6px; cursor: pointer;
@@ -60,16 +60,13 @@
   button.danger:hover { border-color: var(--bad); color: var(--bad); }
   button[disabled] { opacity: .5; cursor: not-allowed; }
 
-  .search { display: flex; gap: 6px; margin-bottom: 10px; }
+  .search { display: flex; gap: 6px; margin-bottom: 8px; }
   .hostlist { list-style: none; margin: 0 0 14px; padding: 0; }
-  .hostlist li {
-    padding: 7px 9px; border: 1px solid transparent; border-radius: 7px; cursor: pointer;
-    margin-bottom: 2px;
-  }
+  .hostlist li { padding: 7px 9px; border: 1px solid transparent; border-radius: 7px; cursor: pointer; margin-bottom: 2px; }
   .hostlist li:hover { background: var(--panel-2); }
   .hostlist li.sel { background: var(--panel-2); border-color: var(--accent); }
   .hostlist .name { font-family: var(--mono); font-size: 13px; }
-  .hostlist .sub { color: var(--muted); font-size: 11.5px; }
+  .hostlist .note { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .badge {
     display: inline-block; padding: 0 5px; border-radius: 4px; font-size: 10.5px;
     border: 1px solid var(--line); color: var(--muted); font-family: var(--mono);
@@ -80,13 +77,13 @@
   .badge.hidden { color: var(--accent); border-color: var(--accent); }
 
   fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 14px; padding: 12px 14px 14px; }
-  legend { padding: 0 6px; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  legend { padding: 0 6px; color: var(--muted); font-size: 12px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px 14px; }
   label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
-  .hint { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+  .hint { font-size: 11.5px; color: var(--muted); margin: 4px 0 0; }
   .row { display: flex; gap: 8px; align-items: center; }
   .check { display: flex; gap: 7px; align-items: center; font-size: 13px; color: var(--text); }
-  .check input { flex: none; }
+  .check label { margin: 0; color: var(--text); font-size: 13px; }
 
   .actions {
     position: sticky; bottom: 0; display: flex; gap: 8px; align-items: center;
@@ -101,10 +98,16 @@
     padding: 8px 10px; margin-bottom: 12px; font-size: 12.5px;
   }
   .warnbox ul { margin: 6px 0 0; padding-left: 18px; }
+  .warnbox code, .hint code { font-family: var(--mono); }
 
-  .app { border: 1px solid var(--line); border-radius: 7px; padding: 10px; margin-bottom: 8px; background: var(--panel-2); }
-  .app .row { justify-content: space-between; margin-bottom: 8px; }
-  .app .row strong { font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
+  details.adv > summary {
+    cursor: pointer; color: var(--muted); font-size: 12px;
+    padding: 6px 0; list-style: none;
+  }
+  details.adv > summary::-webkit-details-marker { display: none; }
+  details.adv > summary::before { content: "▸ "; }
+  details.adv[open] > summary::before { content: "▾ "; }
+  details.adv[open] > summary { margin-bottom: 8px; }
 
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
   th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -112,7 +115,15 @@
   td.cmd { font-family: var(--mono); word-break: break-all; }
   td.denied { color: var(--bad); }
   .empty { color: var(--muted); }
-  details > summary { cursor: pointer; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+
+  .gate-card {
+    max-width: 620px; border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px 20px; background: var(--panel);
+  }
+  .gate-card h2 { margin: 0 0 10px; font-size: 15px; }
+  .gate-card ul { margin: 0; padding-left: 20px; color: var(--muted); }
+  .gate-card li { margin-bottom: 6px; }
+  .gate-card code { font-family: var(--mono); background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
 </style>
 </head>
 <body>
@@ -125,18 +136,18 @@
 <div class="layout">
   <aside>
     <div class="search">
-      <input id="search" placeholder="search hosts, apps, tags…" autocomplete="off">
-      <button id="new" title="New host">+</button>
+      <input id="search" placeholder="搜名称或备注…" autocomplete="off">
+      <button id="new" title="新建主机">＋</button>
     </div>
     <div class="row" style="margin-bottom:10px">
-      <button id="import-open" style="flex:1">import from ~/.ssh/config</button>
+      <button id="import-open" style="flex:1">从 ~/.ssh/config 导入</button>
     </div>
     <ul class="hostlist" id="list"></ul>
     <details id="auditbox">
-      <summary>audit log</summary>
+      <summary style="cursor:pointer;color:var(--muted);font-size:12px">审计日志</summary>
       <div class="row" style="margin:6px 0">
-        <button id="audit-refresh">refresh</button>
-        <span class="sub" id="audit-path"></span>
+        <button id="audit-refresh">刷新</button>
+        <span class="hint" id="audit-path"></span>
       </div>
       <div id="audit-out"></div>
     </details>
@@ -144,246 +155,252 @@
 
   <main>
     <div id="warnings"></div>
-    <p class="empty" id="nothing">Select a host on the left, or create one.</p>
+    <p class="empty" id="nothing">左边选一台主机，或者新建一台。</p>
 
     <div id="gate" hidden>
-      <div class="warnbox">
-        <strong id="gate-title">This editor needs the token from the command line.</strong>
+      <div class="gate-card">
+        <h2 id="gate-title">这个界面需要命令行里那个 token</h2>
         <ul>
-          <li>Run <code>ssha ui</code> (add <code>--open</code> to launch the browser yourself) and
-              open the URL it prints to the terminal. It looks like
-              <code>http://127.0.0.1:8770/?token=…</code>.</li>
-          <li>The token is generated per run and kept only in the URL, so a bookmark, a reload of a
-              bare <code>http://127.0.0.1:8770/</code>, or another browser tab will not work.</li>
-          <li>Lost it? Stop <code>ssha ui</code> and start it again.</li>
+          <li>运行 <code>ssha ui</code>（加 <code>--open</code> 会自动打开浏览器），
+              用它在终端里打印的那条地址，形如 <code>http://127.0.0.1:8770/?token=…</code>。</li>
+          <li>token 每次启动都会重新生成，只放在地址里。所以收藏夹、直接把地址改成
+              <code>http://127.0.0.1:8770/</code>、或者换个标签页打开，都不行。</li>
+          <li>找不到了？把 <code>ssha ui</code> 停掉重新起一次就好。</li>
         </ul>
       </div>
     </div>
 
     <div id="import" hidden>
       <fieldset>
-        <legend>Import from an ssh config</legend>
+        <legend>从 ssh config 导入</legend>
         <p class="hint" style="margin-top:0">
-          Aliases, addresses, users, ports, keys and jump hosts come across. Anything ssha cannot
-          express (Match blocks, ProxyCommand, <code>Host</code> patterns) is reported below instead of
-          being dropped quietly, and nothing is granted: imported hosts start with the policy you pick.
+          别名、地址、用户、端口、私钥、跳板机会一起带过来。ssha 表达不了的东西
+          （Match 块、ProxyCommand、<code>Host</code> 模式）会列在下面，不会静默丢掉。
+          导入不会放权：策略由你选的模式决定。
         </p>
         <div class="grid">
           <div>
-            <label for="i-file">ssh config file</label>
+            <label for="i-file">ssh config 文件</label>
             <input id="i-file" placeholder="~/.ssh/config">
           </div>
           <div>
-            <label for="i-mode">policy for the imported hosts</label>
+            <label for="i-mode">导入主机的策略</label>
             <select id="i-mode">
-              <option value="deny">deny — visible to the agent, runs nothing (safest)</option>
-              <option value="readonly">readonly — a conservative read-only allow list</option>
-              <option value="allow">allow — only the deny list protects it</option>
+              <option value="deny">deny — agent 看得到但什么都不能跑（最安全）</option>
+              <option value="readonly">readonly — 附一份保守的只读白名单</option>
+              <option value="allow">allow — 只靠拒绝列表兜底</option>
             </select>
           </div>
         </div>
         <div class="check" style="margin-top:10px">
-          <input type="checkbox" id="i-overwrite"><label for="i-overwrite" style="margin:0">also refresh hosts that already exist here</label>
+          <input type="checkbox" id="i-overwrite"><label for="i-overwrite">同时刷新已存在的主机</label>
         </div>
       </fieldset>
 
       <div class="row" style="margin-bottom:8px">
-        <button type="button" id="i-rescan">rescan</button>
-        <button type="button" id="i-all">select all</button>
-        <button type="button" id="i-none">select none</button>
+        <button type="button" id="i-rescan">重新扫描</button>
+        <button type="button" id="i-all">全选</button>
+        <button type="button" id="i-none">全不选</button>
         <span class="hint" id="i-count"></span>
       </div>
       <div id="i-list"></div>
 
       <div class="actions">
-        <button type="button" class="primary" id="i-do">Import selected</button>
-        <button type="button" id="i-cancel">Cancel</button>
+        <button type="button" class="primary" id="i-do">导入选中项</button>
+        <button type="button" id="i-cancel">取消</button>
       </div>
       <div class="result" id="i-result"></div>
     </div>
 
     <form id="form" hidden autocomplete="off">
       <fieldset>
-        <legend>Host</legend>
+        <legend>主机</legend>
         <div class="grid">
           <div>
-            <label for="f-name">name (the alias an agent sees)</label>
+            <label for="f-name">名称<span class="hint" style="display:inline"> — agent 只知道这个名字</span></label>
             <input id="f-name" required placeholder="prod-web">
           </div>
           <div>
-            <label for="f-addr">address (IP or DNS name)</label>
+            <label for="f-addr">地址</label>
             <input id="f-addr" placeholder="10.0.0.10">
           </div>
           <div>
-            <label for="f-port">port</label>
+            <label for="f-port">端口</label>
             <input id="f-port" type="number" min="1" max="65535" placeholder="22">
           </div>
           <div>
-            <label for="f-user">user</label>
+            <label for="f-user">用户名</label>
             <input id="f-user" placeholder="deploy">
           </div>
-          <div>
-            <label for="f-work_dir">default working directory</label>
-            <input id="f-work_dir" placeholder="/srv/app">
-          </div>
-          <div>
-            <label for="f-proxy_jump">via jump host (another host's name)</label>
-            <input id="f-proxy_jump" placeholder="bastion">
-          </div>
         </div>
-        <div style="margin-top:10px">
-          <label for="f-description">description (shown to the agent)</label>
-          <input id="f-description" placeholder="Public web frontend">
-        </div>
-        <div class="grid" style="margin-top:10px">
-          <div>
-            <label for="f-tags">tags (comma separated)</label>
-            <input id="f-tags" placeholder="prod, web">
-          </div>
-          <div class="check" style="align-self:end; padding-bottom:6px">
-            <input type="checkbox" id="f-disabled"><label for="f-disabled" style="margin:0">disabled: keep in the file but never select it</label>
-          </div>
+        <div style="margin-top:12px">
+          <label for="f-description">备注</label>
+          <textarea id="f-description" rows="4"
+            placeholder="这台机器上跑什么，出问题先看哪里，谁负责。例如：&#10;公网 Web 前端，nginx 反代。后面是 checkout-api，systemd 单元 checkout-api.service，端口 8080，日志 /var/log/checkout/api.log，重启会先 drain 在途请求。"></textarea>
+          <p class="hint">
+            agent 就是靠这段文字找机器的，所以用你自己的话写清楚跑什么、单元名、日志路径。
+            不需要按格式填，也没有别的字段要维护。
+          </p>
         </div>
       </fieldset>
 
       <fieldset>
-        <legend>Applications on this host</legend>
-        <p class="hint" style="margin-top:0">
-          An agent asked to fix "the payment service" finds it through these entries, so record the
-          systemd unit, the log paths and the ports it needs. Nothing secret belongs here.
-        </p>
-        <div id="apps"></div>
-        <button type="button" id="app-add">+ add application</button>
-      </fieldset>
-
-      <fieldset>
-        <legend>Authentication</legend>
+        <legend>登录方式</legend>
         <div class="grid">
           <div>
-            <label for="f-auth-type">type</label>
+            <label for="f-auth-type">认证类型</label>
             <select id="f-auth-type">
-              <option value="key">key (private key file)</option>
-              <option value="agent">agent (local ssh-agent)</option>
-              <option value="password">password</option>
+              <option value="key">私钥文件</option>
+              <option value="agent">本地 ssh-agent</option>
+              <option value="password">密码</option>
             </select>
           </div>
           <div class="auth-key">
-            <label for="f-key_path">key_path</label>
+            <label for="f-key_path">私钥路径</label>
             <input id="f-key_path" placeholder="~/.ssh/id_ed25519">
           </div>
           <div class="auth-key">
-            <label for="f-passphrase_env">passphrase_env</label>
-            <input id="f-passphrase_env" placeholder="SSHA_KEY_PASSPHRASE">
-          </div>
-          <div class="auth-key">
-            <label for="f-passphrase_file">passphrase_file</label>
+            <label for="f-passphrase_file">私钥口令文件</label>
             <input id="f-passphrase_file" placeholder="~/.config/ssha/key.pass">
           </div>
           <div class="auth-key">
-            <label for="f-key_env">key_env (PEM in an env var, for CI)</label>
+            <label for="f-passphrase_env">私钥口令环境变量</label>
+            <input id="f-passphrase_env" placeholder="SSHA_KEY_PASSPHRASE">
+          </div>
+          <div class="auth-key">
+            <label for="f-key_env">私钥内容环境变量（CI 用）</label>
             <input id="f-key_env" placeholder="SSHA_PRIVATE_KEY">
           </div>
           <div class="auth-pw">
-            <label for="f-password_file">password_file (one line, mode 0600)</label>
+            <label for="f-password_file">密码文件（一行，权限 600）</label>
             <input id="f-password_file" placeholder="~/.config/ssha/prod.pass">
           </div>
           <div class="auth-pw">
-            <label for="f-password_env">password_env (wins over the file)</label>
+            <label for="f-password_env">密码环境变量（优先于文件）</label>
             <input id="f-password_env" placeholder="SSHA_PROD_PASSWORD">
           </div>
         </div>
         <p class="hint">
-          Passwords and passphrases never enter the config, the log or a tool result. With neither a
-          file nor an env var, the CLI prompts and the MCP server returns an error rather than hanging.
+          密码和口令永远不会写进配置文件，也不会出现在工具返回结果里。
+          两个来源都不填的话：命令行会交互式提问，MCP 会直接报错（不会卡住）。
         </p>
       </fieldset>
 
-      <fieldset>
-        <legend>Host key</legend>
-        <div class="grid">
-          <div>
-            <label for="f-known_hosts">known_hosts file</label>
-            <input id="f-known_hosts" placeholder="~/.ssh/known_hosts">
-          </div>
-          <div>
-            <label for="f-fingerprints">pinned fingerprints (one per line)</label>
-            <textarea id="f-fingerprints" placeholder="SHA256:…"></textarea>
-          </div>
-        </div>
-        <div class="row" style="margin-top:8px">
-          <button type="button" id="scan">scan host keys</button>
-          <span class="hint" id="scan-hint">fetches the server's keys and shows their fingerprints</span>
-        </div>
-        <div class="result" id="scan-out"></div>
-        <div class="check" style="margin-top:8px">
-          <input type="checkbox" id="f-insecure"><label for="f-insecure" style="margin:0">insecure: skip verification (testing only)</label>
-        </div>
-      </fieldset>
+      <details class="adv">
+        <summary>高级设置（主机密钥、策略覆盖、跳板机、标签）</summary>
 
-      <fieldset>
-        <legend>Policy</legend>
-        <div class="check" style="margin-bottom:10px">
-          <input type="checkbox" id="f-override"><label for="f-override" style="margin:0">override the global policy for this host</label>
-        </div>
-        <div id="policy-fields">
+        <fieldset>
+          <legend>主机密钥</legend>
           <div class="grid">
             <div>
-              <label for="f-mode">mode</label>
-              <select id="f-mode">
-                <option value="allow">allow — everything except the deny list</option>
-                <option value="readonly">readonly — only the allow list, no shell metacharacters</option>
-                <option value="deny">deny — nothing runs</option>
-              </select>
+              <label for="f-known_hosts">known_hosts 文件</label>
+              <input id="f-known_hosts" placeholder="~/.ssh/known_hosts">
             </div>
             <div>
-              <label for="f-timeout">timeout</label>
-              <input id="f-timeout" placeholder="60s">
-            </div>
-            <div>
-              <label for="f-max">max output bytes</label>
-              <input id="f-max" type="number" min="0" placeholder="262144">
-            </div>
-            <div>
-              <label for="f-disclosure">disclosure</label>
-              <select id="f-disclosure">
-                <option value="full">full — agent sees addr, port, user</option>
-                <option value="alias">alias — no addr, port, user</option>
-                <option value="blind">blind — name and limits only</option>
-              </select>
+              <label for="f-fingerprints">钉死的指纹（一行一个）</label>
+              <textarea id="f-fingerprints" rows="2" placeholder="SHA256:…"></textarea>
             </div>
           </div>
-          <div class="grid" style="margin-top:10px">
-            <div>
-              <label for="f-allow">allow_commands (one regex per line)</label>
-              <textarea id="f-allow" placeholder="^ls\b"></textarea>
+          <div class="row" style="margin-top:8px">
+            <button type="button" id="scan">扫描主机密钥</button>
+            <span class="hint">抓取服务器的公钥并显示指纹，一键填进上面的框</span>
+          </div>
+          <div class="result" id="scan-out"></div>
+          <div class="check" style="margin-top:8px">
+            <input type="checkbox" id="f-insecure"><label for="f-insecure">不校验主机密钥（仅测试用）</label>
+          </div>
+          <p class="hint">
+            默认是空白就沿用 <code>~/.ssh/known_hosts</code>；两边都没有就会拒绝连接——
+            这是 fail-closed，比悄悄连上去安全。
+          </p>
+        </fieldset>
+
+        <fieldset>
+          <legend>策略</legend>
+          <div class="check" style="margin-bottom:10px">
+            <input type="checkbox" id="f-override"><label for="f-override">这台主机覆盖全局策略</label>
+          </div>
+          <div id="policy-fields">
+            <div class="grid">
+              <div>
+                <label for="f-mode">模式</label>
+                <select id="f-mode">
+                  <option value="allow">allow — 除拒绝列表外都允许</option>
+                  <option value="readonly">readonly — 只允许白名单，并拒绝 shell 元字符</option>
+                  <option value="deny">deny — 什么都不允许</option>
+                </select>
+              </div>
+              <div>
+                <label for="f-timeout">超时</label>
+                <input id="f-timeout" placeholder="60s">
+              </div>
+              <div>
+                <label for="f-max">输出上限（字节）</label>
+                <input id="f-max" type="number" min="0" placeholder="262144">
+              </div>
+              <div>
+                <label for="f-disclosure">给 agent 看多少身份</label>
+                <select id="f-disclosure">
+                  <option value="full">full — 地址、端口、用户名都给</option>
+                  <option value="alias">alias — 只给名称和备注</option>
+                  <option value="blind">blind — 只给名称和限制</option>
+                </select>
+              </div>
             </div>
-            <div>
-              <label for="f-deny">deny_commands (one regex per line)</label>
-              <textarea id="f-deny" placeholder="^\s*rm\s+-rf\s+/"></textarea>
+            <div class="grid" style="margin-top:10px">
+              <div>
+                <label for="f-allow">允许的命令（一行一个正则）</label>
+                <textarea id="f-allow" placeholder="^ls\b"></textarea>
+              </div>
+              <div>
+                <label for="f-deny">拒绝的命令（一行一个正则）</label>
+                <textarea id="f-deny" placeholder="^\s*rm\s+-rf\s+/"></textarea>
+              </div>
+              <div>
+                <label for="f-deny_paths">禁止上传/下载的路径（一行一个正则）</label>
+                <textarea id="f-deny_paths" placeholder="^/etc/shadow$"></textarea>
+              </div>
+              <div>
+                <label for="f-redact_patterns">需要遮蔽的正则（一行一个）</label>
+                <textarea id="f-redact_patterns" placeholder="\b\d{1,3}(\.\d{1,3}){3}\b"></textarea>
+              </div>
             </div>
-            <div>
-              <label for="f-deny_paths">deny_paths (one regex per line)</label>
-              <textarea id="f-deny_paths" placeholder="^/etc/shadow$"></textarea>
-            </div>
-            <div>
-              <label for="f-redact_patterns">redact_patterns (one regex per line)</label>
-              <textarea id="f-redact_patterns" placeholder="\b\d{1,3}(\.\d{1,3}){3}\b"></textarea>
+            <div class="grid" style="margin-top:10px">
+              <div class="check"><input type="checkbox" id="f-redact_output"><label for="f-redact_output">遮蔽输出里的地址和用户名（换成 &lt;host&gt;/&lt;user&gt;）</label></div>
+              <div class="check"><input type="checkbox" id="f-allow_meta"><label for="f-allow_meta">readonly 下允许 shell 元字符（管道/分号）</label></div>
+              <div class="check"><input type="checkbox" id="f-no_baseline"><label for="f-no_baseline">关闭内置的危险命令拦截列表</label></div>
             </div>
           </div>
-          <div class="grid" style="margin-top:10px">
-            <div class="check"><input type="checkbox" id="f-redact_output"><label for="f-redact_output" style="margin:0">redact_output: hide the addr/user in command output</label></div>
-            <div class="check"><input type="checkbox" id="f-allow_meta"><label for="f-allow_meta" style="margin:0">allow_shell_metacharacters in readonly mode</label></div>
-            <div class="check"><input type="checkbox" id="f-no_baseline"><label for="f-no_baseline" style="margin:0">disable_baseline (turn off the destructive-command list)</label></div>
+          <p class="hint" id="effective"></p>
+        </fieldset>
+
+        <fieldset>
+          <legend>其他</legend>
+          <div class="grid">
+            <div>
+              <label for="f-proxy_jump">通过跳板机（写另一台主机的名称）</label>
+              <input id="f-proxy_jump" placeholder="bastion">
+            </div>
+            <div>
+              <label for="f-work_dir">默认工作目录</label>
+              <input id="f-work_dir" placeholder="/srv/app">
+            </div>
+            <div>
+              <label for="f-tags">标签（逗号分隔）</label>
+              <input id="f-tags" placeholder="prod, web">
+            </div>
+            <div class="check" style="align-self:end; padding-bottom:6px">
+              <input type="checkbox" id="f-disabled"><label for="f-disabled">禁用：保留在文件里，但永不被选中</label>
+            </div>
           </div>
-        </div>
-        <p class="hint" id="effective"></p>
-      </fieldset>
+        </fieldset>
+      </details>
 
       <div class="actions">
-        <button type="submit" class="primary" id="save">Save</button>
-        <button type="button" id="test">Test connection</button>
-        <button type="button" id="revert">Revert</button>
-        <button type="button" class="danger" id="del" style="margin-left:auto">Delete host</button>
+        <button type="submit" class="primary" id="save">保存</button>
+        <button type="button" id="test">测试连接</button>
+        <button type="button" id="revert">撤销修改</button>
+        <button type="button" class="danger" id="del" style="margin-left:auto">删除主机</button>
       </div>
       <div class="result" id="result"></div>
     </form>
@@ -406,14 +423,17 @@ async function api(path, opts = {}) {
   const text = await res.text();
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch { body = { error: text }; }
-  if (res.status === 401) {
-    throw new Error("the token is missing or stale");
-  }
+  if (res.status === 401) throw new Error("token 缺失或已失效");
   if (!res.ok) throw new Error((body && body.error) || res.statusText);
   return body;
 }
 
-// gate explains how to get in, instead of leaving a cryptic 401 in the corner.
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const oneLine = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+const lines = (s) => s.split("\n").map((x) => x.trim()).filter(Boolean);
+const commas = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
+const setStatus = (msg, bad) => { const el = $("status"); el.textContent = msg; el.style.color = bad ? "var(--bad)" : ""; };
+
 function gate(title) {
   $("gate").hidden = false;
   $("nothing").hidden = true;
@@ -421,37 +441,31 @@ function gate(title) {
   $("import").hidden = true;
   $("list").innerHTML = "";
   $("status").textContent = "";
+  $("warnings").innerHTML = "";
   if (title) $("gate-title").textContent = title;
 }
 
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const lines = (s) => s.split("\n").map((x) => x.trim()).filter(Boolean);
-const commas = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
-const setStatus = (msg, bad) => { const el = $("status"); el.textContent = msg; el.style.color = bad ? "var(--bad)" : ""; };
-
 // ---------------------------------------------------------------------------
-// list
+// 主机列表
 // ---------------------------------------------------------------------------
 
 function renderList() {
   const q = filter.toLowerCase();
   const shown = hosts.filter((h) => {
     if (!q) return true;
-    const hay = [h.name, h.description, (h.tags || []).join(" "), (h.apps || []).map((a) => a.name + " " + (a.description || "")).join(" ")]
-      .join(" ").toLowerCase();
+    const hay = [h.name, h.description, (h.tags || []).join(" ")].join(" ").toLowerCase();
     return q.split(/\s+/).every((w) => hay.includes(w));
   });
   $("list").innerHTML = shown.map((h) => {
-    const tags = (h.tags || []).map((t) => `<span class="badge">${esc(t)}</span>`).join(" ");
-    const apps = (h.apps || []).length ? `${(h.apps || []).length} app${h.apps.length > 1 ? "s" : ""}` : "";
+    const mode = h.effective_mode || "allow";
     const hidden = h.effective_policy && h.effective_policy.disclosure && h.effective_policy.disclosure !== "full";
-    const warn = (h.warnings || []).length ? " ⚠" : "";
+    const warn = (h.warnings || []).length ? ' <span class="badge" style="color:var(--warn);border-color:var(--warn)">!</span>' : "";
+    const note = oneLine(h.description) || [h.user, h.addr].filter(Boolean).join("@");
     return `<li class="${h.name === selected ? "sel" : ""}" data-name="${esc(h.name)}">
-      <div class="name">${esc(h.name)} <span class="badge ${esc(h.effective_mode)}">${esc(h.effective_mode)}</span>${hidden ? ' <span class="badge hidden">hidden</span>' : ""}${warn}</div>
-      <div class="sub">${esc(h.description || [h.user, h.addr].filter(Boolean).join("@"))}</div>
-      <div class="sub">${tags}${apps ? (tags ? " · " : "") + apps : ""}</div>
+      <div class="name">${esc(h.name)} <span class="badge ${esc(mode)}">${esc(mode)}</span>${hidden ? ' <span class="badge hidden">隐藏身份</span>' : ""}${warn}</div>
+      <div class="note">${esc(note)}</div>
     </li>`;
-  }).join("") || `<li class="empty">no match</li>`;
+  }).join("") || `<li class="empty">没有匹配的主机</li>`;
 }
 
 $("list").addEventListener("click", (e) => {
@@ -464,25 +478,23 @@ $("list").addEventListener("click", (e) => {
 $("search").addEventListener("input", (e) => { filter = e.target.value; renderList(); });
 
 // ---------------------------------------------------------------------------
-// form
+// 表单
 // ---------------------------------------------------------------------------
-
-function blankHost() {
-  return { name: "", auth: { type: "key" }, host_key: {}, tags: [], apps: [] };
-}
 
 function loadHost() {
   const h = hosts.find((x) => x.name === selected);
   if (!h) return;
   $("nothing").hidden = true;
+  $("gate").hidden = true;
   $("form").hidden = false;
   const v = (id, val) => { $(id).value = val ?? ""; };
   v("f-name", h.name);
   v("f-addr", h.addr); v("f-port", h.port || ""); v("f-user", h.user);
-  v("f-work_dir", h.work_dir); v("f-proxy_jump", h.proxy_jump);
   v("f-description", h.description);
   v("f-tags", (h.tags || []).join(", "));
   $("f-disabled").checked = !!h.disabled;
+  v("f-proxy_jump", h.proxy_jump);
+  v("f-work_dir", h.work_dir);
 
   v("f-auth-type", h.auth?.type || "key");
   v("f-key_path", h.auth?.key_path); v("f-key_env", h.auth?.key_env);
@@ -507,16 +519,16 @@ function loadHost() {
   $("f-allow_meta").checked = !!p?.allow_shell_metacharacters;
   $("f-no_baseline").checked = !!p?.disable_baseline;
 
-  renderApps(h.apps || []);
+  renderWarnings(h.warnings || []);
   syncAuthFields();
   syncPolicyFields();
-  renderWarnings(h.warnings || []);
+  $("scan-out").textContent = "";
   $("result").textContent = "";
 }
 
 function renderWarnings(list) {
   $("warnings").innerHTML = list.length
-    ? `<div class="warnbox"><strong>${list.length} thing${list.length > 1 ? "s" : ""} to check</strong><ul>${list.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>`
+    ? `<div class="warnbox"><strong>有 ${list.length} 项建议处理一下</strong><ul>${list.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>`
     : "";
 }
 
@@ -531,66 +543,19 @@ function syncPolicyFields() {
   const h = hosts.find((x) => x.name === selected);
   const eff = h?.effective_policy;
   if (eff) {
-    $("effective").textContent = `effective now: mode=${eff.mode}, timeout=${eff.timeout}, disclosure=${eff.disclosure || "full"}`
-      + (eff.allow_commands?.length ? `, allow=${eff.allow_commands.length} rule(s)` : "")
-      + (eff.deny_commands?.length ? `, deny=${eff.deny_commands.length} rule(s)` : "");
+    $("effective").textContent = `当前生效：模式 ${eff.mode}，超时 ${eff.timeout}，`
+      + `身份可见度 ${eff.disclosure || "full"}`
+      + (eff.allow_commands?.length ? `，允许 ${eff.allow_commands.length} 条规则` : "")
+      + (eff.deny_commands?.length ? `，拒绝 ${eff.deny_commands.length} 条规则` : "");
   }
 }
 
 $("f-auth-type").addEventListener("change", syncAuthFields);
 $("f-override").addEventListener("change", syncPolicyFields);
 
-// apps ----------------------------------------------------------------------
-
-function appCard(a = {}) {
-  const d = document.createElement("div");
-  d.className = "app";
-  d.innerHTML = `
-    <div class="row"><strong class="app-title">${esc(a.name || "new application")}</strong>
-      <button type="button" class="app-del danger">remove</button></div>
-    <div class="grid">
-      <div><label>name</label><input class="a-name" value="${esc(a.name)}" placeholder="payment-api"></div>
-      <div><label>kind</label><input class="a-kind" value="${esc(a.kind)}" placeholder="api / web / worker / db"></div>
-      <div><label>systemd unit</label><input class="a-unit" value="${esc(a.unit)}" placeholder="payment-api.service"></div>
-      <div><label>ports</label><input class="a-ports" value="${(a.ports || []).join(", ")}" placeholder="8080, 9090"></div>
-      <div><label>install / working dir</label><input class="a-path" value="${esc(a.path)}" placeholder="/srv/payment"></div>
-      <div><label>log files</label><input class="a-logs" value="${(a.logs || []).join(", ")}" placeholder="/var/log/payment/api.log"></div>
-      <div><label>tags</label><input class="a-tags" value="${(a.tags || []).join(", ")}" placeholder="critical, team-payments"></div>
-      <div><label>runbook</label><input class="a-runbook" value="${esc(a.runbook)}" placeholder="https://…"></div>
-    </div>
-    <div style="margin-top:8px"><label>description</label><input class="a-desc" value="${esc(a.description)}" placeholder="Handles card payments; restart is safe, drains first"></div>`;
-  d.querySelector(".a-name").addEventListener("input", (e) => { d.querySelector(".app-title").textContent = e.target.value || "new application"; });
-  d.querySelector(".app-del").addEventListener("click", () => d.remove());
-  return d;
-}
-
-function renderApps(apps) {
-  const box = $("apps");
-  box.innerHTML = "";
-  apps.forEach((a) => box.appendChild(appCard(a)));
-}
-
-$("app-add").addEventListener("click", () => $("apps").appendChild(appCard()));
-
-function collectApps() {
-  return [...$("apps").querySelectorAll(".app")].map((d) => {
-    const g = (cls) => d.querySelector("." + cls).value.trim();
-    const ports = commas(g("a-ports")).map((n) => parseInt(n, 10)).filter((n) => Number.isFinite(n));
-    return {
-      name: g("a-name"),
-      kind: g("a-kind"),
-      description: g("a-desc"),
-      unit: g("a-unit"),
-      ports,
-      logs: commas(g("a-logs")),
-      path: g("a-path"),
-      tags: commas(g("a-tags")),
-      runbook: g("a-runbook"),
-    };
-  }).filter((a) => a.name);
-}
-
-// collect / save ------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 收集并保存
+// ---------------------------------------------------------------------------
 
 function collect() {
   const val = (id) => $(id).value.trim();
@@ -607,7 +572,6 @@ function collect() {
     disabled: $("f-disabled").checked,
     auth: { type: val("f-auth-type") },
     host_key: {},
-    apps: collectApps(),
     policy: null,
   };
   const auth = h.auth;
@@ -659,15 +623,15 @@ function showResult(msg, bad) {
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const h = collect();
-  if (!h.name) { showResult("name is required", true); return; }
+  if (!h.name) { showResult("名称不能为空", true); return; }
   $("save").disabled = true;
   try {
     await api("/api/hosts", { method: "POST", body: JSON.stringify(h) });
     selected = h.name;
     await refresh();
-    showResult("saved to " + state.config_path, false);
+    showResult("已保存到 " + state.config_path, false);
   } catch (err) {
-    showResult(String(err.message || err), true);
+    showResult("保存失败：" + String(err.message || err), true);
   } finally {
     $("save").disabled = false;
   }
@@ -676,23 +640,23 @@ $("form").addEventListener("submit", async (e) => {
 $("revert").addEventListener("click", loadHost);
 
 $("del").addEventListener("click", async () => {
-  if (!selected || !confirm(`Delete host "${selected}" from the config?`)) return;
+  if (!selected || !confirm(`确定从配置里删除「${selected}」？`)) return;
   try {
     await api("/api/hosts/" + encodeURIComponent(selected), { method: "DELETE" });
     selected = null;
     $("form").hidden = true;
     $("nothing").hidden = false;
     await refresh();
-  } catch (err) { showResult(String(err.message || err), true); }
+  } catch (err) { showResult("删除失败：" + String(err.message || err), true); }
 });
 
 $("test").addEventListener("click", async () => {
   if (!selected) return;
-  showResult("connecting…", false);
+  showResult("连接中…", false);
   try {
     const r = await api("/api/test", { method: "POST", body: JSON.stringify({ name: selected }) });
-    const bits = [`${r.ok ? "ok" : "FAILED"}  ${r.latency_ms}ms`];
-    if (r.host_key_fingerprint) bits.push(`key ${r.host_key_fingerprint} (${r.host_key_type})`);
+    const bits = [`${r.ok ? "连接正常" : "连接失败"}　${r.latency_ms}ms`];
+    if (r.host_key_fingerprint) bits.push(`主机密钥 ${r.host_key_fingerprint} (${r.host_key_type})`);
     if (r.error) bits.push(r.error);
     showResult(bits.join("\n"), !r.ok);
   } catch (err) { showResult(String(err.message || err), true); }
@@ -701,47 +665,45 @@ $("test").addEventListener("click", async () => {
 $("scan").addEventListener("click", async () => {
   const addr = $("f-addr").value.trim() || $("f-name").value.trim();
   const port = parseInt($("f-port").value, 10) || 22;
-  if (!addr) { showResult("set an address first", true); return; }
-  $("scan-out").textContent = "scanning…";
+  if (!addr) { showResult("先填地址", true); return; }
+  $("scan-out").textContent = "扫描中…";
   try {
     const r = await api("/api/hostkey", { method: "POST", body: JSON.stringify({ addr, port }) });
     $("scan-out").textContent = r.keys.map((k) => `${k.type.padEnd(22)} ${k.fingerprint}`).join("\n")
-      + "\n\nknown_hosts lines:\n" + r.keys.map((k) => "  " + k.line).join("\n");
+      + "\n\nknown_hosts 行：\n" + r.keys.map((k) => "  " + k.line).join("\n");
     $("f-fingerprints").value = r.keys.map((k) => k.fingerprint).join("\n");
-    showResult("scanned; the fingerprints are filled in — save to pin them", false);
+    showResult("已扫描，指纹已填入上方，保存后生效", false);
   } catch (err) {
     $("scan-out").textContent = "";
-    showResult("scan failed: " + String(err.message || err), true);
+    showResult("扫描失败：" + String(err.message || err), true);
   }
 });
 
 // ---------------------------------------------------------------------------
-// import from an ssh config
+// 从 ~/.ssh/config 导入
 // ---------------------------------------------------------------------------
 
 async function loadCandidates() {
-  $("i-result").textContent = "scanning…";
+  $("i-result").textContent = "扫描中…";
   try {
     const q = $("i-file").value.trim();
     const r = await api("/api/sshconfig" + (q ? "?file=" + encodeURIComponent(q) : ""));
     $("i-file").value = r.file;
     const rows = r.hosts || [];
     const known = rows.filter((c) => c.exists).length;
-    $("i-count").textContent = rows.length
-      ? `${rows.length} alias(es), ${known} already in the config`
-      : "";
+    $("i-count").textContent = rows.length ? `共 ${rows.length} 个，其中 ${known} 个已存在` : "";
     $("i-list").innerHTML = rows.length
       ? rows.map((c) => `
         <label class="check" style="align-items:flex-start; padding:7px 9px; border:1px solid var(--line); border-radius:7px; margin-bottom:4px">
           <input type="checkbox" class="i-pick" value="${esc(c.alias)}" checked>
           <span>
-            <span class="name" style="font-family:var(--mono)">${esc(c.alias)}</span>
-            <span class="sub"> → ${esc(c.addr)}${c.user ? " as " + esc(c.user) : ""}${c.port && c.port !== 22 ? ":" + c.port : ""} · auth ${esc(c.auth)}${c.proxy_jump ? " · via " + esc(c.proxy_jump) : ""}</span>
-            ${c.exists ? ' <span class="badge">already configured</span>' : ""}
-            ${(c.warnings || []).map((w) => `<div class="sub" style="color:var(--warn)">${esc(w)}</div>`).join("")}
+            <span style="font-family:var(--mono)">${esc(c.alias)}</span>
+            <span class="hint"> → ${esc(c.addr)}${c.user ? " 用户 " + esc(c.user) : ""}${c.port && c.port !== 22 ? ":" + c.port : ""} · 认证 ${esc(c.auth)}${c.proxy_jump ? " · 经 " + esc(c.proxy_jump) : ""}</span>
+            ${c.exists ? ' <span class="badge">已存在</span>' : ""}
+            ${(c.warnings || []).map((w) => `<div class="hint" style="color:var(--warn)">${esc(w)}</div>`).join("")}
           </span>
         </label>`).join("")
-      : `<p class="empty">no Host blocks found in ${esc(r.file)}</p>`;
+      : `<p class="empty">在 ${esc(r.file)} 里没找到 Host 块</p>`;
     const warnings = r.warnings || [];
     $("i-result").textContent = warnings.length ? warnings.map((w) => "· " + w).join("\n") : "";
     $("i-result").className = warnings.length ? "result" : "result ok";
@@ -757,7 +719,9 @@ function openImport() {
   renderList();
   $("nothing").hidden = true;
   $("form").hidden = true;
+  $("gate").hidden = true;
   $("import").hidden = false;
+  $("warnings").innerHTML = "";
   loadCandidates();
 }
 
@@ -772,7 +736,7 @@ $("i-none").addEventListener("click", () => document.querySelectorAll(".i-pick")
 
 $("i-do").addEventListener("click", async () => {
   const aliases = [...document.querySelectorAll(".i-pick:checked")].map((c) => c.value);
-  if (!aliases.length) { $("i-result").textContent = "nothing selected"; return; }
+  if (!aliases.length) { $("i-result").textContent = "没有选中任何项"; return; }
   $("i-do").disabled = true;
   try {
     const r = await api("/api/sshconfig/import", {
@@ -786,15 +750,15 @@ $("i-do").addEventListener("click", async () => {
     });
     await refresh();
     const imported = r.imported || [], skipped = r.skipped || [], warnings = r.warnings || [];
-    const bits = [`imported ${imported.length}: ${imported.join(", ")}`];
-    if (skipped.length) bits.push(`skipped ${skipped.length} already present: ${skipped.join(", ")}`);
+    const bits = [`已导入 ${imported.length} 台：${imported.join("、")}`];
+    if (skipped.length) bits.push(`跳过已存在的 ${skipped.length} 台：${skipped.join("、")}`);
     if (warnings.length) bits.push(warnings.map((w) => "· " + w).join("\n"));
     await loadCandidates();
     $("i-result").textContent = bits.join("\n");
     $("i-result").className = "result ok";
-    setStatus(`${hosts.length} host(s)`);
+    setStatus(`${hosts.length} 台主机`);
   } catch (err) {
-    $("i-result").textContent = String(err.message || err);
+    $("i-result").textContent = "导入失败：" + String(err.message || err);
     $("i-result").className = "result bad";
   } finally {
     $("i-do").disabled = false;
@@ -802,7 +766,7 @@ $("i-do").addEventListener("click", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// audit
+// 审计
 // ---------------------------------------------------------------------------
 
 async function loadAudit() {
@@ -810,13 +774,13 @@ async function loadAudit() {
     const r = await api("/api/audit?limit=50" + (selected ? "&host=" + encodeURIComponent(selected) : ""));
     $("audit-path").textContent = r.audit_log;
     const records = r.records || [];
-    if (!records.length) { $("audit-out").innerHTML = `<p class="empty">no records</p>`; return; }
+    if (!records.length) { $("audit-out").innerHTML = `<p class="empty">暂无记录</p>`; return; }
     $("audit-out").innerHTML = `<table>
-      <tr><th>when</th><th>host</th><th>decision</th><th>command</th></tr>
+      <tr><th>时间</th><th>主机</th><th>结果</th><th>命令</th></tr>
       ${records.slice().reverse().map((x) => `<tr>
         <td>${esc(new Date(x.time).toLocaleString())}</td>
         <td>${esc(x.host)}</td>
-        <td class="${x.decision === "denied" ? "denied" : ""}">${esc(x.decision)}</td>
+        <td class="${x.decision === "denied" ? "denied" : ""}">${x.decision === "denied" ? "已拒绝" : "已允许"}</td>
         <td class="cmd">${esc(x.command || x.path || "")}</td>
       </tr>`).join("")}</table>`;
   } catch (err) {
@@ -827,7 +791,7 @@ $("audit-refresh").addEventListener("click", loadAudit);
 $("auditbox").addEventListener("toggle", () => { if ($("auditbox").open) loadAudit(); });
 
 // ---------------------------------------------------------------------------
-// boot
+// 启动
 // ---------------------------------------------------------------------------
 
 async function refresh() {
@@ -836,20 +800,21 @@ async function refresh() {
   $("cfgpath").textContent = state.config_path;
   renderList();
   if (selected && hosts.some((h) => h.name === selected)) loadHost();
-  setStatus(hosts.length + " host(s)");
+  setStatus(`${hosts.length} 台主机`);
 }
 
 $("new").addEventListener("click", () => {
   selected = null;
   renderList();
   $("nothing").hidden = true;
+  $("gate").hidden = true;
   $("form").hidden = false;
-  const h = blankHost();
-  Object.assign(h, { name: "", description: "", addr: "", port: "", user: "", work_dir: "", proxy_jump: "", tags: [], apps: [] });
   const v = (id, val) => { $(id).value = val ?? ""; };
-  ["f-name","f-addr","f-port","f-user","f-work_dir","f-proxy_jump","f-description","f-tags",
-   "f-key_path","f-key_env","f-passphrase_env","f-passphrase_file","f-password_env","f-password_file",
-   "f-known_hosts","f-fingerprints","f-timeout","f-max","f-allow","f-deny","f-deny_paths","f-redact_patterns"].forEach((id) => v(id, ""));
+  ["f-name", "f-addr", "f-port", "f-user", "f-description", "f-tags",
+   "f-key_path", "f-key_env", "f-passphrase_env", "f-passphrase_file",
+   "f-password_env", "f-password_file", "f-known_hosts", "f-fingerprints",
+   "f-timeout", "f-max", "f-allow", "f-deny", "f-deny_paths", "f-redact_patterns",
+   "f-proxy_jump", "f-work_dir"].forEach((id) => v(id, ""));
   $("f-disabled").checked = false;
   $("f-insecure").checked = false;
   $("f-auth-type").value = "key";
@@ -859,9 +824,9 @@ $("new").addEventListener("click", () => {
   $("f-redact_output").checked = false;
   $("f-allow_meta").checked = false;
   $("f-no_baseline").checked = false;
-  renderApps([]);
   renderWarnings([]);
   syncAuthFields(); syncPolicyFields();
+  $("scan-out").textContent = "";
   $("result").textContent = "";
   $("f-name").focus();
 });

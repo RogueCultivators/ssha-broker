@@ -237,25 +237,32 @@ func renderHostTests(results []*broker.HostTest) string {
 	return sb.String()
 }
 
+// oneLine collapses a multi-line note into one line for a table cell, clipped
+// by runes so a Chinese note does not end up half a character.
+func oneLine(s string) string {
+	flat := strings.Join(strings.Fields(strings.ReplaceAll(s, "\n", " ")), " ")
+	const limit = 60
+	runes := []rune(flat)
+	if len(runes) <= limit {
+		return flat
+	}
+	return string(runes[:limit-1]) + "…"
+}
+
 func renderHostTable(hosts []broker.HostInfo) string {
 	if len(hosts) == 0 {
 		return "no hosts match\n"
 	}
 	var sb strings.Builder
 	tw := tabwriter.NewWriter(&sb, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tUSER\tADDR\tPOLICY\tTAGS\tAPPS\tDESCRIPTION")
+	fmt.Fprintln(tw, "NAME\tUSER\tADDR\tPOLICY\tTAGS\tNOTE")
 	for _, h := range hosts {
 		name := h.Name
 		if h.Disabled {
 			name += " (disabled)"
 		}
-		apps := make([]string, 0, len(h.Apps))
-		for _, app := range h.Apps {
-			apps = append(apps, app.Name)
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			name, h.User, h.Addr, h.PolicyMode, strings.Join(h.Tags, ","),
-			strings.Join(apps, ","), h.Description)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			name, h.User, h.Addr, h.PolicyMode, strings.Join(h.Tags, ","), oneLine(h.Description))
 	}
 	tw.Flush()
 	return sb.String()
@@ -266,54 +273,18 @@ func renderHostDetail(h broker.HostInfo) string {
 	tw := tabwriter.NewWriter(&sb, 0, 4, 2, ' ', 0)
 	row := func(k, v string) {
 		if v != "" {
-			fmt.Fprintf(tw, "%s:\t%s\n", k, v)
+			// A multi-line note should line up under the value column.
+			fmt.Fprintf(tw, "%s:\t%s\n", k, strings.ReplaceAll(strings.TrimRight(v, "\n"), "\n", "\n\t"))
 		}
 	}
 	row("name", h.Name)
-	row("description", h.Description)
+	row("note", h.Description)
 	if h.Addr == "" {
 		row("address", "withheld by policy (use --reveal to see it)")
 	} else {
 		row("address", fmt.Sprintf("%s@%s", h.User, h.Addr))
 	}
 	row("tags", strings.Join(h.Tags, ", "))
-	for i, app := range h.Apps {
-		header := app.Name
-		if app.Kind != "" {
-			header += " (" + app.Kind + ")"
-		}
-		if app.Description != "" {
-			header += " - " + app.Description
-		}
-		if i == 0 {
-			row("applications", header)
-		} else {
-			fmt.Fprintf(tw, "\t%s\n", header)
-		}
-		var details []string
-		if app.Unit != "" {
-			details = append(details, "unit="+app.Unit)
-		}
-		if len(app.Ports) > 0 {
-			ports := make([]string, len(app.Ports))
-			for j, p := range app.Ports {
-				ports[j] = strconv.Itoa(p)
-			}
-			details = append(details, "ports="+strings.Join(ports, ","))
-		}
-		if app.Path != "" {
-			details = append(details, "path="+app.Path)
-		}
-		if len(app.Logs) > 0 {
-			details = append(details, "logs="+strings.Join(app.Logs, ","))
-		}
-		if app.Runbook != "" {
-			details = append(details, "runbook="+app.Runbook)
-		}
-		if len(details) > 0 {
-			fmt.Fprintf(tw, "\t%s\n", strings.Join(details, "  "))
-		}
-	}
 	row("auth", h.Auth)
 	row("via jump host", h.ProxyJump)
 	row("work dir", h.WorkDir)
@@ -697,7 +668,6 @@ func names(hs []config.Host) []string {
 type runFlags struct {
 	cwd     string
 	cmd     string
-	app     string
 	timeout time.Duration
 	maxOut  int
 	dryRun  bool
@@ -712,7 +682,6 @@ func (a *App) addRunFlags(name string) *runFlags {
 	r.fs.DurationVar(&r.timeout, "timeout", 0, "per-command timeout; can only shorten the policy limit")
 	r.fs.IntVar(&r.maxOut, "max-output", 0, "max captured output bytes; can only lower the policy limit")
 	r.fs.Var(&r.env, "e", "extra environment variable KEY=VALUE (repeatable)")
-	r.fs.StringVar(&r.app, "app", "", "name the application this command is for; it must be one this host runs, and it is recorded in the audit log")
 	return r
 }
 
@@ -748,7 +717,6 @@ func (a *App) cmdRun(args []string) int {
 
 	res, err := b.Exec(ctx, broker.ExecRequest{
 		Host:           host,
-		App:            r.app,
 		Command:        command,
 		Cwd:            r.cwd,
 		Env:            r.env,
@@ -840,8 +808,8 @@ func (a *App) cmdMulti(args []string) int {
 	if command == "" {
 		return a.usageErr("usage: ssha multi [--host H]... [--tag T]... [--] <command>")
 	}
-	if len(hosts) == 0 && len(tags) == 0 && *multiQuery == "" && r.app == "" {
-		return a.usageErr("select hosts with --host, --tag, --query or --app")
+	if len(hosts) == 0 && len(tags) == 0 && *multiQuery == "" {
+		return a.usageErr("select hosts with --host, --tag or --query")
 	}
 
 	b, err := a.open()
@@ -854,7 +822,6 @@ func (a *App) cmdMulti(args []string) int {
 		Hosts:          hosts,
 		Tags:           tags,
 		Query:          *multiQuery,
-		App:            r.app,
 		Command:        command,
 		Cwd:            r.cwd,
 		Timeout:        r.timeout,
@@ -1094,11 +1061,10 @@ func (a *App) cmdAudit(args []string) int {
 
 func (a *App) cmdAuditLs(args []string) int {
 	fs := a.newFlagSet("audit ls")
-	var host, app, typ, decision string
+	var host, typ, decision string
 	limit := fs.Int("limit", 50, "maximum records")
 	since := fs.Duration("since", 0, "only records newer than this duration ago")
 	fs.StringVar(&host, "host", "", "filter by host")
-	fs.StringVar(&app, "app", "", "filter by the application the command was for")
 	fs.StringVar(&typ, "type", "", "filter by type: exec, upload, download")
 	fs.StringVar(&decision, "decision", "", "filter by decision: allowed, denied")
 	if code, ok := a.parse(fs, args); !ok {
@@ -1110,7 +1076,7 @@ func (a *App) cmdAuditLs(args []string) int {
 	}
 	defer b.Close()
 
-	filter := audit.Filter{Host: host, App: app, Type: typ, Decision: decision}
+	filter := audit.Filter{Host: host, Type: typ, Decision: decision}
 	if *since > 0 {
 		filter.Since = time.Now().Add(-*since)
 	}
@@ -1130,7 +1096,7 @@ func renderAuditTable(records []audit.Record) string {
 	}
 	var sb strings.Builder
 	tw := tabwriter.NewWriter(&sb, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "TIME\tID\tHOST\tAPP\tTYPE\tDECISION\tEXIT\tCOMMAND")
+	fmt.Fprintln(tw, "TIME\tID\tHOST\tTYPE\tDECISION\tEXIT\tCOMMAND")
 	for i := range records {
 		r := &records[i]
 		cmd := strings.ReplaceAll(strings.TrimSpace(r.Command), "\n", " ")
@@ -1145,8 +1111,8 @@ func renderAuditTable(records []audit.Record) string {
 			agent = r.Agent.Tool
 		}
 		_ = agent
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
-			r.Time.Local().Format("2006-01-02 15:04:05"), r.ID, r.Host, r.App, r.Type, r.Decision, r.ExitCode, cmd)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
+			r.Time.Local().Format("2006-01-02 15:04:05"), r.ID, r.Host, r.Type, r.Decision, r.ExitCode, cmd)
 	}
 	tw.Flush()
 	return sb.String()
@@ -1193,7 +1159,6 @@ func renderAuditDetail(r *audit.Record) string {
 	}
 	row("type", r.Type)
 	row("host", r.Host)
-	row("app", r.App)
 	row("command", r.Command)
 	row("path", r.Path)
 	row("cwd", r.Cwd)
