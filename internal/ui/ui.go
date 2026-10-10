@@ -5,7 +5,10 @@
 // discover that a host has no host key pinned or no password source.
 //
 // The server binds to loopback only and requires a per-run token, so a page in
-// another tab cannot drive it.
+// another tab cannot drive it. A management password is required on top of
+// that before any host, audit or settings data is returned. That password does
+// not unlock SSH credentials: those are sealed on disk and read back by the
+// CLI and MCP without an extra step.
 package ui
 
 import (
@@ -103,6 +106,9 @@ func (s *Server) routes() {
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(page)
 	})
+	mux.Handle("/api/session", s.tokenOnly(http.HandlerFunc(s.handleSession)))
+	mux.Handle("/api/session/lock", s.tokenOnly(http.HandlerFunc(s.handleSessionLock)))
+	mux.Handle("/api/session/password", s.auth(http.HandlerFunc(s.handleSessionPassword)))
 	mux.Handle("/api/state", s.auth(http.HandlerFunc(s.handleState)))
 	mux.Handle("/api/hosts", s.auth(http.HandlerFunc(s.handleHosts)))
 	mux.Handle("/api/hosts/", s.auth(http.HandlerFunc(s.handleHost)))
@@ -110,6 +116,9 @@ func (s *Server) routes() {
 	mux.Handle("/api/test", s.auth(http.HandlerFunc(s.handleTest)))
 	mux.Handle("/api/hostkey", s.auth(http.HandlerFunc(s.handleHostKey)))
 	mux.Handle("/api/audit", s.auth(http.HandlerFunc(s.handleAudit)))
+	mux.Handle("/api/audit/summary", s.auth(http.HandlerFunc(s.handleAuditSummary)))
+	mux.Handle("/api/audit/verify", s.auth(http.HandlerFunc(s.handleAuditVerify)))
+	mux.Handle("/api/settings", s.auth(http.HandlerFunc(s.handleSettings)))
 	mux.Handle("/api/skill", s.auth(http.HandlerFunc(s.handleSkill)))
 	mux.Handle("/api/skill/download", s.auth(http.HandlerFunc(s.handleSkillDownload)))
 	mux.Handle("/api/skill/install", s.auth(http.HandlerFunc(s.handleSkillInstall)))
@@ -246,6 +255,12 @@ type Server struct {
 	mu  sync.Mutex
 	b   *broker.Broker
 	mux *http.ServeMux
+
+	sessMu   sync.Mutex
+	sessions map[string]time.Time
+	guard    loginGuard
+	// kdf overrides the Argon2id cost. The zero value is the production cost.
+	kdf kdfParams
 }
 
 func (s *Server) openBroker() error {
@@ -289,9 +304,9 @@ func (s *Server) broker() *broker.Broker {
 	return s.b
 }
 
-// auth enforces the per-run token. A custom header also means a cross-origin
+// tokenOnly enforces the per-run token. A custom header also means a cross-origin
 // page cannot reach the API without a CORS preflight we never approve.
-func (s *Server) auth(next http.Handler) http.Handler {
+func (s *Server) tokenOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 			http.Error(w, "cross-site request refused", http.StatusForbidden)
@@ -305,6 +320,12 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// auth is the token plus the management-password session. Host, audit and
+// settings data stay behind it.
+func (s *Server) auth(next http.Handler) http.Handler {
+	return s.tokenOnly(s.requireSession(next))
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -331,9 +352,12 @@ type hostView struct {
 	Warnings      []string    `json:"warnings,omitempty"`
 	EffectiveMode string      `json:"effective_mode"`
 	// Whether the configured secret file exists and is non-empty. The secret
-	// itself is never part of any response.
-	PasswordReady   bool `json:"password_ready"`
-	PassphraseReady bool `json:"passphrase_ready"`
+	// itself is never part of any response. Sealed means the file is ciphertext,
+	// which is how files written by this editor are stored.
+	PasswordReady    bool `json:"password_ready"`
+	PassphraseReady  bool `json:"passphrase_ready"`
+	PasswordSealed   bool `json:"password_sealed"`
+	PassphraseSealed bool `json:"passphrase_sealed"`
 }
 
 type statePayload struct {
@@ -343,7 +367,19 @@ type statePayload struct {
 	Version    string      `json:"version"`
 	Global     config.Spec `json:"global_policy"`
 	Defaults   config.Spec `json:"defaults"`
-	Hosts      []hostView  `json:"hosts"`
+	// Policy is the global policy exactly as the file has it, so the settings
+	// form can tell "inherited" from "set to the same value as the default".
+	Policy config.Spec       `json:"policy"`
+	Audit  auditSettingsView `json:"audit"`
+	Hosts  []hostView        `json:"hosts"`
+}
+
+// auditSettingsView is the audit configuration with its defaults resolved, so
+// the form has a real value to show for everything.
+type auditSettingsView struct {
+	Path          string `json:"path"`
+	StoreOutput   bool   `json:"store_output"`
+	MaxFieldBytes int    `json:"max_field_bytes"`
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
@@ -356,17 +392,25 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		Version:    s.version,
 		Global:     cfg.GlobalPolicy(),
 		Defaults:   cfg.Defaults,
+		Policy:     cfg.Policy,
+		Audit: auditSettingsView{
+			Path:          b.AuditPath(),
+			StoreOutput:   cfg.Audit.StoreOutputEnabled(),
+			MaxFieldBytes: maxFieldBytes(cfg),
+		},
 	}
 	for i := range cfg.Hosts {
 		h := cfg.Hosts[i]
 		spec := cfg.EffectivePolicy(&h)
 		out.Hosts = append(out.Hosts, hostView{
-			Host:            h,
-			Effective:       spec,
-			EffectiveMode:   spec.Mode,
-			Warnings:        hostWarnings(&h, spec),
-			PasswordReady:   config.HasSecret(h.Auth.PasswordFile),
-			PassphraseReady: config.HasSecret(h.Auth.PassphraseFile),
+			Host:             h,
+			Effective:        spec,
+			EffectiveMode:    spec.Mode,
+			Warnings:         hostWarnings(&h, spec),
+			PasswordReady:    config.HasSecret(h.Auth.PasswordFile),
+			PassphraseReady:  config.HasSecret(h.Auth.PassphraseFile),
+			PasswordSealed:   config.SecretSealed(h.Auth.PasswordFile),
+			PassphraseSealed: config.SecretSealed(h.Auth.PassphraseFile),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -590,10 +634,25 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 {
 		limit = 50
 	}
-	records, err := s.broker().AuditQuery(audit.Filter{
+	if limit > 5000 {
+		limit = 5000
+	}
+	filter := audit.Filter{
 		Host:     q.Get("host"),
+		Type:     q.Get("type"),
 		Decision: q.Get("decision"),
-	}, limit)
+		Query:    q.Get("q"),
+	}
+	if since := q.Get("since"); since != "" {
+		t, err := parseSince(since)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		filter.Since = t
+	}
+
+	records, err := s.broker().AuditQuery(filter, limit)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -605,7 +664,104 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		"audit_log": s.broker().AuditPath(),
 		"records":   records,
 		"count":     len(records),
+		// A full page means there may be older records; the page says so rather
+		// than pretending this is everything.
+		"maybe_more": len(records) == limit,
+		"limit":      limit,
 	})
+}
+
+// parseSince accepts what an operator would type into a filter: a window like
+// 24h, a day count like 7d, or an exact time.
+func parseSince(v string) (time.Time, error) {
+	v = strings.TrimSpace(v)
+	if strings.HasSuffix(v, "d") {
+		if days, err := strconv.Atoi(strings.TrimSuffix(v, "d")); err == nil {
+			return time.Now().AddDate(0, 0, -days), nil
+		}
+	}
+	if d, err := time.ParseDuration(v); err == nil {
+		return time.Now().Add(-d), nil
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("无法理解的时间 %q：可用 24h、7d 或 RFC3339", v)
+}
+
+// handleAuditSummary counts the log by result, type, host and time so the
+// audit page can classify it without loading every command body.
+func (s *Server) handleAuditSummary(w http.ResponseWriter, r *http.Request) {
+	var today time.Time
+	if v := strings.TrimSpace(r.URL.Query().Get("today")); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("无法理解的时间 %q：需要 RFC3339", v))
+			return
+		}
+		today = t
+	}
+	sum, err := audit.Summarize(s.broker().AuditPath(), time.Now(), today)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"audit_log": s.broker().AuditPath(),
+		"total":     sum.Total,
+		"decision":  sum.Decision,
+		"type":      sum.Type,
+		"host":      sum.Host,
+		"today":     sum.Today,
+		"last_24h":  sum.Last24h,
+		"last_7d":   sum.Last7d,
+		"last_30d":  sum.Last30d,
+	})
+}
+
+// handleAuditVerify walks the hash chain and reports the first break, if any.
+func (s *Server) handleAuditVerify(w http.ResponseWriter, r *http.Request) {
+	n, err := s.broker().AuditVerify()
+	if err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"records": n, "ok": true})
+}
+
+// handleSettings saves the global policy and the audit settings.
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeErr(w, http.StatusMethodNotAllowed, errors.New("请用 POST"))
+		return
+	}
+	var payload struct {
+		Policy config.Spec        `json:"policy"`
+		Audit  config.AuditConfig `json:"audit"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&payload); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid settings payload: %w", err))
+		return
+	}
+	if err := config.SetGlobals(s.cfgPath, payload.Policy, payload.Audit); err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	if err := s.reload(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// maxFieldBytes is the configured truncation of stored output, with the default
+// applied, so the form does not show 0 bytes for a field that is not set.
+func maxFieldBytes(cfg *config.Config) int {
+	if cfg.Audit.MaxFieldBytes > 0 {
+		return cfg.Audit.MaxFieldBytes
+	}
+	return broker.DefaultMaxFieldBytes
 }
 
 // ---------------------------------------------------------------------------

@@ -23,8 +23,18 @@ func TestWriteAndReadSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the secret file was not written: %v", err)
 	}
-	if strings.TrimSpace(string(b)) != "hunter2" {
-		t.Errorf("content = %q", b)
+	if strings.Contains(string(b), "hunter2") {
+		t.Fatalf("password stored in plaintext: %q", b)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(string(b)), "SSHA1:") {
+		t.Fatalf("content = %q, want a sealed secret", b)
+	}
+	got, err := ReadSecretFile(path)
+	if err != nil {
+		t.Fatalf("ReadSecretFile: %v", err)
+	}
+	if got != "hunter2" {
+		t.Errorf("ReadSecretFile = %q, want hunter2", got)
 	}
 	st, err := os.Stat(path)
 	if err != nil {
@@ -49,8 +59,15 @@ func TestWriteAndReadSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ = os.ReadFile(path)
-	if strings.TrimSpace(string(b)) != "newer" {
-		t.Errorf("content after overwrite = %q", b)
+	if strings.Contains(string(b), "newer") {
+		t.Fatalf("overwrite left the password in plaintext: %q", b)
+	}
+	got, err = ReadSecretFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "newer" {
+		t.Errorf("ReadSecretFile after overwrite = %q, want newer", got)
 	}
 
 	if err := DeleteSecret(cfgPath, "prod-web", SecretPassword); err != nil {

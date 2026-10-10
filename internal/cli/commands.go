@@ -1095,6 +1095,7 @@ func (a *App) cmdAuditLs(args []string) int {
 	fs.StringVar(&host, "host", "", "filter by host")
 	fs.StringVar(&typ, "type", "", "filter by type: exec, upload, download")
 	fs.StringVar(&decision, "decision", "", "filter by decision: allowed, denied")
+	query := fs.String("query", "", "search command, path, reason, host and type")
 	if code, ok := a.parse(fs, args); !ok {
 		return code
 	}
@@ -1104,7 +1105,7 @@ func (a *App) cmdAuditLs(args []string) int {
 	}
 	defer b.Close()
 
-	filter := audit.Filter{Host: host, Type: typ, Decision: decision}
+	filter := audit.Filter{Host: host, Type: typ, Decision: decision, Query: *query}
 	if *since > 0 {
 		filter.Since = time.Now().Add(-*since)
 	}

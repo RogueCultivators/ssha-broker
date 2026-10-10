@@ -269,3 +269,125 @@ func writeDocument(path string, doc *yaml.Node) error {
 	}
 	return nil
 }
+
+// ---------------------------------------------------------------------------
+// global settings
+// ---------------------------------------------------------------------------
+
+// policyKeys are the only policy keys the settings form owns. The lists
+// (allow_commands, deny_commands, deny_paths, redact_patterns) are not among
+// them, and that is the point: they are written by hand, often at length, and a
+// form that saved the whole block would delete every one of them.
+var policyKeys = []string{"mode", "disclosure", "redact_output", "timeout", "max_output_bytes"}
+
+// auditKeys is the same idea for the audit block. `path` is not one of them:
+// moving the log from a form would orphan the records already written.
+var auditKeys = []string{"store_output", "max_field_bytes"}
+
+// SetGlobals writes the global policy and the audit settings in a single edit,
+// so that one save is one backup of the state before the form.
+//
+// A field left at its zero value is removed from the file, which is how the
+// form says "inherit the built-in default" rather than pinning a value.
+func SetGlobals(path string, spec Spec, auditCfg AuditConfig) error {
+	doc, err := readDocument(path)
+	if err != nil {
+		return err
+	}
+
+	policy := map[string]any{}
+	if spec.Mode != "" {
+		policy["mode"] = spec.Mode
+	}
+	if spec.Disclosure != "" {
+		policy["disclosure"] = spec.Disclosure
+	}
+	if spec.RedactOutput {
+		policy["redact_output"] = true
+	}
+	if spec.Timeout > 0 {
+		policy["timeout"] = spec.Timeout
+	}
+	if spec.MaxOutputBytes > 0 {
+		policy["max_output_bytes"] = spec.MaxOutputBytes
+	}
+	if err := setBlock(doc, "policy", policy, policyKeys); err != nil {
+		return err
+	}
+
+	audit := map[string]any{}
+	if auditCfg.StoreOutput != nil {
+		audit["store_output"] = *auditCfg.StoreOutput
+	}
+	if auditCfg.MaxFieldBytes > 0 {
+		audit["max_field_bytes"] = auditCfg.MaxFieldBytes
+	}
+	if err := setBlock(doc, "audit", audit, auditKeys); err != nil {
+		return err
+	}
+
+	return writeDocument(path, doc)
+}
+
+// setBlock applies values to one top-level mapping, touching only the named
+// keys. A key that values does not carry is removed from the document; every
+// other key is left exactly as it was found.
+func setBlock(doc *yaml.Node, block string, values map[string]any, keys []string) error {
+	src, err := encodeNode(values)
+	if err != nil {
+		return err
+	}
+	dst, err := mappingAt(doc, block)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		sv, ok := lookupIn(src, key)
+		if !ok || isEmptyNode(sv) {
+			removeKey(dst, key)
+			continue
+		}
+		if dv, ok := lookupIn(dst, key); ok {
+			mergeNode(dv, sv)
+			continue
+		}
+		kn, err := encodeNode(key)
+		if err != nil {
+			return err
+		}
+		dst.Content = append(dst.Content, kn, sv)
+	}
+	return nil
+}
+
+// mappingAt returns the top-level mapping under key, creating it when the key is
+// missing and replacing it when it holds something that is not a mapping.
+func mappingAt(doc *yaml.Node, key string) (*yaml.Node, error) {
+	root, err := rootMapping(doc)
+	if err != nil {
+		return nil, err
+	}
+	m := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	idx, v, ok := mapLookup(root, key)
+	switch {
+	case !ok:
+		kn, err := encodeNode(key)
+		if err != nil {
+			return nil, err
+		}
+		root.Content = append(root.Content, kn, m)
+	case v.Kind != yaml.MappingNode:
+		root.Content[idx+1] = m
+	default:
+		return v, nil
+	}
+	return m, nil
+}
+
+func removeKey(m *yaml.Node, key string) {
+	idx, _, ok := mapLookup(m, key)
+	if !ok {
+		return
+	}
+	m.Content = append(m.Content[:idx], m.Content[idx+2:]...)
+}

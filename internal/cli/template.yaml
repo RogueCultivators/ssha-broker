@@ -101,6 +101,8 @@ hosts:
   #   install -m 600 /dev/null ~/.config/ssha/legacy.pass
   #   read -rs -p 'password: ' P && printf '%s\n' "$P" > ~/.config/ssha/legacy.pass
   #
+  # 在界面里输入的密码会加密写到配置旁边的 secrets/。命令行和 MCP 自动解密。
+  # 自己写的 password_file 保持明文，ssha 不会改它。
   # 两者都不配的话，CLI 会交互式提问；但 MCP 不会提问，会直接报错。
   # -------------------------------------------------------------------------
   - name: legacy

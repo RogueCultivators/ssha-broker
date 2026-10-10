@@ -436,6 +436,16 @@ func (c *Config) Validate() error {
 	if len(c.Hosts) == 0 {
 		return errors.New("config: no hosts defined")
 	}
+	// The global blocks are checked on their own, not only through the hosts
+	// that inherit them: a config where every host overrides the global mode
+	// would otherwise never look at it, and a typo there would sit in the file
+	// until a host dropped its override.
+	if err := validateGlobalSpec("the global policy", c.Policy); err != nil {
+		return err
+	}
+	if err := validateGlobalSpec("defaults", c.Defaults); err != nil {
+		return err
+	}
 	c.byName = make(map[string]*Host, len(c.Hosts))
 	for i := range c.Hosts {
 		h := &c.Hosts[i]
@@ -486,6 +496,26 @@ func (c *Config) Validate() error {
 		if _, err := c.Host(h.ProxyJump); err != nil {
 			return fmt.Errorf("config: host %q: proxy_jump: %w", c.Hosts[i].Name, err)
 		}
+	}
+	return nil
+}
+
+// validateGlobalSpec rejects a value that is not one of the accepted ones in a
+// spec that hosts inherit from.
+//
+// It is deliberately looser than the per-host check: an empty value means
+// "inherit", and it does not require an allow list, because a global
+// `mode: readonly` is legitimate when every host brings its own.
+func validateGlobalSpec(where string, spec Spec) error {
+	switch spec.Mode {
+	case "", ModeAllow, ModeReadonly, ModeDeny:
+	default:
+		return fmt.Errorf("config: %s: unknown policy mode %q", where, spec.Mode)
+	}
+	switch spec.Disclosure {
+	case "", DisclosureFull, DisclosureAlias, DisclosureBlind:
+	default:
+		return fmt.Errorf("config: %s: unknown policy disclosure %q (want full, alias or blind)", where, spec.Disclosure)
 	}
 	return nil
 }

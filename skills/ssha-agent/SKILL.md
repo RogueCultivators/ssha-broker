@@ -164,9 +164,11 @@ the address, say so and let the operator decide.
   password lives outside ssha. Do not guess or hardcode it. Tell the user to
   set `password_env`/`password_file` for that host, or to run the command
   themselves in a terminal so ssha can prompt. ssha never prompts over MCP.
-- `host key mismatch` / `unknown host key`: the server's key is not pinned. Do
-  not disable verification. Report the fingerprints and let the user decide,
-  then suggest `ssha host-key <host> --write`.
+- `host key mismatch` / `unknown host key`: the server's key is not pinned. A
+  key already trusted for this host on port 22 is accepted on other ports
+  automatically; this error means that did not apply. Do not disable
+  verification. Report the fingerprints and let the user decide, then suggest
+  `ssha host-key <host> --write`.
 - `keyboard-interactive was refused: the password is probably wrong` or
   `the server rejected every credential offered`: the credentials are wrong.
   Stop and report; do not retry with variations.

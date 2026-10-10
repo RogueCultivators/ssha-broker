@@ -223,3 +223,149 @@ func TestUpsertHostWritesABackup(t *testing.T) {
 		t.Errorf("backup does not match the previous content:\n%s", got)
 	}
 }
+
+// The settings form owns a handful of policy keys. Everything an operator wrote
+// by hand in that same block has to come out the other side untouched: a form
+// that saved the whole block would quietly delete a deny list.
+const handWrittenPolicy = `version: 1
+
+# Hand tuned. The editor has no business rewriting the lists below.
+policy:
+  mode: readonly
+  timeout: 30s
+  allow_commands:
+    - '^ls\b'
+    - '^cat /var/log/'
+  deny_commands: ['rm -rf']
+  deny_paths: ['^/etc/']
+  redact_patterns: ['\d+\.\d+\.\d+\.\d+']
+
+audit:
+  path: /var/log/ssha/audit.jsonl
+  max_field_bytes: 4096
+
+hosts:
+  - name: web-1
+    addr: 10.0.0.10
+    auth:
+      type: agent
+    policy:
+      mode: readonly
+      allow_commands: ['^ls\b']
+`
+
+func TestSetGlobalsKeepsHandWrittenKeys(t *testing.T) {
+	path := tempConfig(t, handWrittenPolicy)
+	err := SetGlobals(path, Spec{
+		Mode:         ModeAllow,
+		Disclosure:   DisclosureBlind,
+		RedactOutput: true,
+	}, AuditConfig{StoreOutput: boolPtr(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(got)
+	for _, want := range []string{
+		"deny_commands: ['rm -rf']",
+		"deny_paths: ['^/etc/']",
+		"redact_patterns:",
+		"^cat /var/log/",
+		"# Hand tuned. The editor has no business rewriting the lists below.",
+		"path: /var/log/ssha/audit.jsonl",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("lost %q from\n%s", want, body)
+		}
+	}
+	// And the values the form does own are the ones that changed.
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Policy.Mode != ModeAllow {
+		t.Errorf("mode = %q, want allow", cfg.Policy.Mode)
+	}
+	if cfg.Policy.Disclosure != DisclosureBlind {
+		t.Errorf("disclosure = %q, want blind", cfg.Policy.Disclosure)
+	}
+	if !cfg.Policy.RedactOutput {
+		t.Error("redact_output was not set")
+	}
+	if cfg.Audit.MaxFieldBytes != 0 {
+		t.Errorf("max_field_bytes = %d, want the key gone", cfg.Audit.MaxFieldBytes)
+	}
+	if cfg.Audit.StoreOutputEnabled() {
+		t.Error("store_output = true, want an explicit false")
+	}
+}
+
+// An empty value means "inherit the built-in default", which is written as the
+// absence of the key rather than as a pinned zero.
+func TestSetGlobalsRemovesZeroValues(t *testing.T) {
+	path := tempConfig(t, handWrittenPolicy)
+	if err := SetGlobals(path, Spec{}, AuditConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Policy.Timeout != 0 {
+		t.Errorf("timeout = %v, want the key gone", cfg.Policy.Timeout)
+	}
+	if cfg.Policy.Mode != "" {
+		t.Errorf("mode = %q, want the key gone", cfg.Policy.Mode)
+	}
+	if cfg.Audit.StoreOutput != nil {
+		t.Error("store_output should be absent")
+	}
+	// The default is still what applies.
+	if spec := cfg.GlobalPolicy(); spec.Mode != ModeAllow || spec.Timeout.D() != DefaultTimeout {
+		t.Errorf("effective policy = %+v, want the built-in defaults", spec)
+	}
+}
+
+// A policy block that is missing entirely gets created, and an existing one that
+// is not a mapping gets replaced rather than crashing the merge.
+func TestSetGlobalsCreatesMissingBlocks(t *testing.T) {
+	path := tempConfig(t, `version: 1
+policy: nonsense
+hosts:
+  - name: web-1
+    auth: {type: agent}
+`)
+	if err := SetGlobals(path, Spec{Mode: ModeDeny}, AuditConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Policy.Mode != ModeDeny {
+		t.Errorf("mode = %q, want deny", cfg.Policy.Mode)
+	}
+}
+
+// Validation runs before the write is kept, so a form that would produce a
+// broken configuration is refused and the previous file stays.
+func TestSetGlobalsRejectsInvalidMode(t *testing.T) {
+	path := tempConfig(t, handWrittenPolicy)
+	err := SetGlobals(path, Spec{Mode: "sometimes"}, AuditConfig{})
+	if err == nil {
+		t.Fatal("expected an error for an unknown mode")
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != handWrittenPolicy {
+		t.Error("the file changed despite the error")
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }

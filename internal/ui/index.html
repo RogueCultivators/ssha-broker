@@ -6,7 +6,16 @@
 <title>ssha · 配置</title>
 <style>
   :root {
-    color-scheme: dark light;
+    color-scheme: dark;
+    /* One knob sets the whole type scale, so the font size setting moves every
+       size together instead of only the body text. */
+    --fs: 14px;
+    --fs-lg: calc(var(--fs) + 1px);
+    --fs-md: calc(var(--fs) - 1px);
+    --fs-code: calc(var(--fs) - 1.5px);
+    --fs-sm: calc(var(--fs) - 2px);
+    --fs-xs: calc(var(--fs) - 2.5px);
+    --fs-xxs: calc(var(--fs) - 3.5px);
     --bg: #101216;
     --panel: #171a20;
     --panel-2: #1d2128;
@@ -19,18 +28,22 @@
     --bad: #e06c75;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
   }
-  @media (prefers-color-scheme: light) {
-    :root {
-      --bg: #f6f7f9; --panel: #fff; --panel-2: #f0f2f5; --line: #d9dde4;
-      --text: #1b1f27; --muted: #666f7d; --accent: #2f6fd0;
-      --ok: #1f8a52; --warn: #9a6b00; --bad: #b83a45;
-    }
+  /* Script resolves "follow the system" and writes the result to data-theme, so
+     there is one copy of each palette and no @media query that has to agree
+     with the setting. */
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f6f7f9; --panel: #fff; --panel-2: #f0f2f5; --line: #d9dde4;
+    --text: #1b1f27; --muted: #666f7d; --accent: #2f6fd0;
+    --ok: #1f8a52; --warn: #9a6b00; --bad: #b83a45;
   }
+  :root[data-size="small"] { --fs: 13px; }
+  :root[data-size="large"] { --fs: 15.5px; }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
     margin: 0; overflow: hidden; background: var(--bg); color: var(--text);
-    font: 14px/1.6 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font: var(--fs)/1.6 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
     /* Desktop app, not a web page: chrome is not text to select, and the cursor
        only turns into a caret where you can actually type. */
     user-select: none; cursor: default;
@@ -43,12 +56,45 @@
     border-bottom: 1px solid var(--line); background: var(--panel);
   }
   header .mark { width: 22px; height: 22px; flex: none; -webkit-user-drag: none; }
-  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }
-  header .path { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-  header .status { margin-left: auto; font-size: 12px; color: var(--muted); }
-  .layout { display: grid; grid-template-columns: minmax(250px, 310px) 1fr; height: calc(100% - 46px); }
+  header h1 { font-size: var(--fs-lg); margin: 0; font-weight: 600; letter-spacing: .02em; }
+  header .path { font-family: var(--mono); font-size: var(--fs-sm); color: var(--muted); }
+  header .status { margin-left: auto; font-size: var(--fs-sm); color: var(--muted); }
+  .layout { position: relative; display: grid; grid-template-columns: 58px minmax(250px, 310px) 1fr; height: calc(100% - 46px); min-height: 0; }
+  .layout > * { min-width: 0; min-height: 0; }
+  /* The audit and settings pages are about the whole file, not one host, so the
+     host list goes away and the page gets its width. */
+  .layout.no-list { grid-template-columns: 58px 1fr; }
+  aside[hidden] { display: none; }
+
+  .rail {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    padding: 8px 0; background: var(--panel-2); border-right: 1px solid var(--line);
+  }
+  .rail button {
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    width: 48px; padding: 7px 0; border: 1px solid transparent; border-radius: 9px;
+    background: none; color: var(--muted); font-size: var(--fs-xxs); line-height: 1.1;
+  }
+  .rail button svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.7; }
+  .rail button:hover { background: var(--panel); color: var(--text); }
+  .rail button.active { background: var(--panel); color: var(--accent); border-color: var(--line); }
+
+  .page-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .page-head h2 { margin: 0; font-size: var(--fs-lg); font-weight: 600; }
+  .page-head .path { font-family: var(--mono); font-size: var(--fs-sm); color: var(--muted); }
+
   aside { border-right: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 12px; }
   main { overflow: auto; padding: 16px 20px 60px; }
+  /* The audit page is its own workspace, not a form dropped into the host editor. */
+  .layout.view-audit main { padding: 0; overflow: hidden; }
+  /* Sized from the window, not from the record. A long command or a 64KB
+     output must not be able to grow this box — WebKit will otherwise let the
+     min-content width of that text blow the whole page out sideways. */
+  .layout.view-audit #page-audit {
+    position: absolute; z-index: 2; top: 0; right: 0; bottom: 0; left: 58px;
+    display: flex; width: auto; height: auto; margin: 0; overflow: hidden;
+  }
+  #page-audit[hidden] { display: none !important; }
 
   input, select, textarea, button { font: inherit; color: inherit; }
   input, select, textarea {
@@ -56,7 +102,7 @@
     border: 1px solid var(--line); border-radius: 6px;
   }
   input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-  textarea { font-family: var(--mono); font-size: 12.5px; min-height: 62px; resize: vertical; }
+  textarea { font-family: var(--mono); font-size: var(--fs-code); min-height: 62px; resize: vertical; }
   input[type=checkbox] { width: auto; flex: none; }
   button {
     padding: 6px 12px; background: var(--panel-2); border: 1px solid var(--line);
@@ -72,10 +118,10 @@
   .hostlist li { padding: 7px 9px; border: 1px solid transparent; border-radius: 7px; cursor: pointer; margin-bottom: 2px; }
   .hostlist li:hover { background: var(--panel-2); }
   .hostlist li.sel { background: var(--panel-2); border-color: var(--accent); }
-  .hostlist .name { font-family: var(--mono); font-size: 13px; }
-  .hostlist .note { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hostlist .name { font-family: var(--mono); font-size: var(--fs-md); }
+  .hostlist .note { color: var(--muted); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .badge {
-    display: inline-block; padding: 0 5px; border-radius: 4px; font-size: 10.5px;
+    display: inline-block; padding: 0 5px; border-radius: 4px; font-size: var(--fs-xxs);
     border: 1px solid var(--line); color: var(--muted); font-family: var(--mono);
   }
   .badge.allow { color: var(--ok); border-color: var(--ok); }
@@ -84,31 +130,31 @@
   .badge.hidden { color: var(--accent); border-color: var(--accent); }
 
   fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 14px; padding: 12px 14px 14px; }
-  legend { padding: 0 6px; color: var(--muted); font-size: 12px; }
+  legend { padding: 0 6px; color: var(--muted); font-size: var(--fs-sm); }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px 14px; }
-  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
-  .hint { font-size: 11.5px; color: var(--muted); margin: 4px 0 0; }
+  label { display: block; font-size: var(--fs-sm); color: var(--muted); margin-bottom: 3px; }
+  .hint { font-size: var(--fs-xs); color: var(--muted); margin: 4px 0 0; }
   .row { display: flex; gap: 8px; align-items: center; }
-  .check { display: flex; gap: 7px; align-items: center; font-size: 13px; color: var(--text); }
-  .check label { margin: 0; color: var(--text); font-size: 13px; }
+  .check { display: flex; gap: 7px; align-items: center; font-size: var(--fs-md); color: var(--text); }
+  .check label { margin: 0; color: var(--text); font-size: var(--fs-md); }
 
   .actions {
     position: sticky; bottom: 0; display: flex; gap: 8px; align-items: center;
     padding: 10px 0 12px; margin-top: 4px; border-top: 1px solid var(--line);
     background: var(--bg);
   }
-  .result { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; margin-top: 8px; }
+  .result { font-family: var(--mono); font-size: var(--fs-sm); white-space: pre-wrap; margin-top: 8px; }
   .result.ok { color: var(--ok); }
   .result.bad { color: var(--bad); }
   .warnbox {
     border: 1px solid var(--warn); color: var(--warn); border-radius: 7px;
-    padding: 8px 10px; margin-bottom: 12px; font-size: 12.5px;
+    padding: 8px 10px; margin-bottom: 12px; font-size: var(--fs-code);
   }
   .warnbox ul { margin: 6px 0 0; padding-left: 18px; }
   .warnbox code, .hint code { font-family: var(--mono); }
 
   details.adv > summary {
-    cursor: pointer; color: var(--muted); font-size: 12px;
+    cursor: pointer; color: var(--muted); font-size: var(--fs-sm);
     padding: 6px 0; list-style: none;
   }
   details.adv > summary::-webkit-details-marker { display: none; }
@@ -119,28 +165,133 @@
   pre.snippet {
     margin: 4px 0 0; padding: 8px 10px; background: var(--panel-2);
     border: 1px solid var(--line); border-radius: 6px; overflow-x: auto;
-    font-family: var(--mono); font-size: 12px; white-space: pre;
+    font-family: var(--mono); font-size: var(--fs-sm); white-space: pre;
   }
 
-  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
   th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--muted); font-weight: 500; }
   td.cmd { font-family: var(--mono); word-break: break-all; }
-  td.denied { color: var(--bad); }
   .empty { color: var(--muted); }
+
+  #page-audit { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .audit-app {
+    position: absolute; top: 0; right: 0; bottom: 0; left: 0;
+    display: grid; grid-template-columns: 176px minmax(0, 1fr) minmax(240px, 420px);
+    grid-template-rows: 100%; overflow: hidden;
+  }
+  .audit-nav {
+    display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden;
+    border-right: 1px solid var(--line); background: var(--panel);
+  }
+  .audit-nav-scroll { overflow: auto; padding: 8px 8px 18px; }
+  .audit-nav h3 { margin: 14px 8px 4px; font-size: var(--fs-xs); font-weight: 600; color: var(--muted); }
+  .audit-nav button.cat {
+    display: flex; width: 100%; align-items: baseline; justify-content: space-between; gap: 8px;
+    padding: 5px 8px; border: 1px solid transparent; border-radius: 7px;
+    background: none; text-align: left; color: var(--text);
+  }
+  .audit-nav button.cat:hover { background: var(--panel-2); }
+  .audit-nav button.cat.active { background: var(--panel-2); border-color: var(--line); }
+  .audit-nav button.cat .n { font-variant-numeric: tabular-nums; color: var(--muted); font-size: var(--fs-xs); }
+  .audit-nav button.cat .n.warn { color: var(--bad); }
+  .audit-nav-foot { margin-top: auto; padding: 10px; border-top: 1px solid var(--line); }
+  .audit-nav-foot .path {
+    display: block; margin-bottom: 8px; font-family: var(--mono); font-size: var(--fs-xxs); color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .audit-nav-foot button { width: 100%; }
+  .audit-nav-foot .msg { margin: 6px 0 0; font-size: var(--fs-xs); color: var(--muted); }
+  .audit-list { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg); }
+  .audit-bar {
+    display: flex; gap: 6px; align-items: center; padding: 10px 12px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  .audit-bar input { flex: 1; width: auto; }
+  .audit-note {
+    margin: 0; padding: 6px 14px; font-size: var(--fs-xs); color: var(--muted);
+    border-bottom: 1px solid var(--line);
+  }
+  .audit-scroll { flex: 1; min-height: 0; min-width: 0; overflow: auto; padding: 4px 8px 28px; }
+  .audit-day { margin: 14px 8px 4px; font-size: var(--fs-xs); color: var(--muted); }
+  .audit-row {
+    display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; width: 100%; max-width: 100%;
+    min-width: 0; overflow: hidden;
+    padding: 7px 8px; border: 1px solid transparent; border-radius: 8px;
+    background: none; text-align: left; color: inherit; cursor: pointer;
+  }
+  .audit-row:hover { background: var(--panel); }
+  .audit-row.active { background: var(--panel); border-color: var(--line); }
+  .audit-row.is-denied .audit-cmd { color: var(--bad); }
+  .audit-time { font-variant-numeric: tabular-nums; color: var(--muted); font-size: var(--fs-sm); padding-top: 1px; }
+  .audit-row-body { min-width: 0; overflow: hidden; }
+  .audit-row { user-select: none; }
+  .audit-detail, .audit-detail * { user-select: text; }
+  .audit-cmd {
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    font-family: var(--mono); font-size: var(--fs-code); line-height: 1.4;
+    overflow-wrap: anywhere; word-break: break-all;
+  }
+  .audit-meta { display: block; margin-top: 2px; color: var(--muted); font-size: var(--fs-xs); }
+  .audit-meta .host { color: var(--text); }
+  button.audit-more { display: block; width: calc(100% - 16px); margin: 10px 8px; }
+  .audit-detail {
+    min-width: 0; min-height: 0; height: 100%; max-height: 100%; overflow: auto;
+    border-left: 1px solid var(--line); background: var(--panel); padding: 16px 16px 32px;
+  }
+  .audit-detail .when { margin: 0 0 8px; color: var(--muted); font-size: var(--fs-sm); }
+  .audit-detail h2 {
+    margin: 0 0 10px; max-height: 6.5em; overflow: auto;
+    font-family: var(--mono); font-size: var(--fs-md); font-weight: 500;
+    line-height: 1.45; overflow-wrap: anywhere; word-break: break-all;
+  }
+  .audit-detail .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .audit-detail .tag {
+    font-size: var(--fs-xs); padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted);
+  }
+  .audit-detail .tag.ok { color: var(--ok); border-color: var(--ok); }
+  .audit-detail .tag.bad { color: var(--bad); border-color: var(--bad); }
+  .audit-detail .reason {
+    margin: 0 0 12px; color: var(--bad); font-size: var(--fs-sm);
+    overflow-wrap: anywhere; word-break: break-all;
+  }
+  .audit-facts {
+    display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px;
+    margin: 0 0 12px; font-size: var(--fs-sm);
+  }
+  .audit-facts dt { color: var(--muted); }
+  .audit-facts dd { margin: 0; min-width: 0; font-family: var(--mono); overflow-wrap: anywhere; word-break: break-all; }
+  .audit-detail pre {
+    margin: 0 0 10px; max-width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 6px; overflow: auto; max-height: 320px; white-space: pre-wrap;
+    overflow-wrap: anywhere; word-break: break-all;
+    font-family: var(--mono); font-size: var(--fs-code);
+  }
+  .audit-detail .label { color: var(--muted); font-size: var(--fs-xs); margin: 8px 0 4px; }
 
   .gate-card {
     max-width: 620px; border: 1px solid var(--line); border-radius: 10px;
     padding: 18px 20px; background: var(--panel);
   }
-  .gate-card h2 { margin: 0 0 10px; font-size: 15px; }
+  .gate-card h2 { margin: 0 0 10px; font-size: var(--fs-lg); }
   .gate-card ul { margin: 0; padding-left: 20px; color: var(--muted); }
   .gate-card li { margin-bottom: 6px; }
   .gate-card code { font-family: var(--mono); background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+
+  #lock {
+    position: fixed; inset: 0; z-index: 30;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg); padding: 24px;
+  }
+  #lock[hidden] { display: none !important; }
+  #lock .gate-card { width: min(420px, 100%); }
+  #lock label { margin-top: 10px; }
+  #lock .row { margin-top: 14px; }
+  #lock-now { flex: none; }
 </style>
 </head>
 <body>
-<header>
+<header inert>
   <!-- The icon, inline, so the window chrome matches the packaged icon without
        another request. Same shapes as packaging/icons/generate.py. -->
   <svg class="mark" viewBox="0 0 100 100" aria-hidden="true">
@@ -152,10 +303,64 @@
   <h1>ssha</h1>
   <span class="path" id="cfgpath"></span>
   <span class="status" id="status"></span>
+  <button type="button" id="lock-now" hidden>锁定</button>
 </header>
 
-<div class="layout">
-  <aside>
+<div id="lock">
+  <div class="gate-card">
+    <h2 id="lock-title">正在确认…</h2>
+    <p class="hint" id="lock-hint" style="margin-top:0"></p>
+
+    <form id="lock-setup" hidden>
+      <label for="lock-new">管理密码</label>
+      <input id="lock-new" type="password" autocomplete="new-password">
+      <label for="lock-confirm">再输入一次</label>
+      <input id="lock-confirm" type="password" autocomplete="new-password">
+      <p class="hint">至少 8 位。忘记后删掉配置旁边的 <code>secrets/ui-auth.json</code> 再设一次，已经加密的 SSH 密码不受影响。</p>
+      <div class="row">
+        <button type="submit" class="primary">设置并进入</button>
+      </div>
+      <p class="result bad" id="lock-setup-error"></p>
+    </form>
+
+    <form id="lock-unlock" hidden>
+      <label for="lock-password">管理密码</label>
+      <input id="lock-password" type="password" autocomplete="current-password">
+      <div class="row">
+        <button type="submit" class="primary">进入</button>
+      </div>
+      <p class="hint">忘记了就删掉配置旁边的 <code>secrets/ui-auth.json</code>，重新打开界面再设。已经加密的 SSH 密码还在。</p>
+      <p class="result bad" id="lock-error"></p>
+    </form>
+  </div>
+</div>
+
+<div class="layout" id="shell" inert>
+  <!-- Three pages, one window. The rail is the whole navigation. -->
+  <nav class="rail" id="rail">
+    <button type="button" data-view="hosts" class="active" title="主机（Ctrl+1）">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/>
+        <path d="M7 7.5h.01M7 16.5h.01"/>
+      </svg>
+      主机
+    </button>
+    <button type="button" data-view="audit" title="审计日志（Ctrl+2）">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M9 6h11M9 12h11M9 18h11"/>
+        <circle cx="4.5" cy="6" r="1.2"/><circle cx="4.5" cy="12" r="1.2"/><circle cx="4.5" cy="18" r="1.2"/>
+      </svg>
+      审计
+    </button>
+    <button type="button" data-view="settings" title="设置（Ctrl+3）">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 7h6M16 7h4M4 12h10M18 12h2M4 17h12M20 17h0"/>
+        <circle cx="13" cy="7" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="18" cy="17" r="2"/>
+      </svg>
+      设置
+    </button>
+  </nav>
+  <aside id="side">
     <div class="search">
       <input id="search" placeholder="搜名称或备注…" autocomplete="off">
       <button id="new" title="新建主机">＋</button>
@@ -167,14 +372,6 @@
       <button id="agent-open" style="flex:1">接入 agent</button>
     </div>
     <ul class="hostlist" id="list"></ul>
-    <details id="auditbox">
-      <summary style="cursor:pointer;color:var(--muted);font-size:12px">审计日志</summary>
-      <div class="row" style="margin:6px 0">
-        <button id="audit-refresh">刷新</button>
-        <span class="hint" id="audit-path"></span>
-      </div>
-      <div id="audit-out"></div>
-    </details>
   </aside>
 
   <main>
@@ -316,7 +513,7 @@
           <p class="hint" id="password-state"></p>
         </div>
 
-        <p class="hint">保存在 <code id="secrets-dir">secrets/</code> 下（0600），不进配置文件。</p>
+        <p class="hint">保存在 <code id="secrets-dir">secrets/</code> 下（0600），加密保存，不进配置文件，界面不显示原文。</p>
 
         <details class="adv" style="margin-top:8px">
           <summary>高级：自己指定文件或环境变量</summary>
@@ -460,6 +657,170 @@
       </div>
       <div class="result" id="result"></div>
     </form>
+
+    <!-- ------------------------------------------------------------------
+         Audit is a workspace of its own: classify on the left, read the day
+         down the middle, open one record on the right. It is not a table
+         squeezed into the host editor.
+         ------------------------------------------------------------------ -->
+    <section id="page-audit" hidden>
+      <div class="audit-app" id="audit-app">
+        <nav class="audit-nav" aria-label="日志分类">
+          <div class="audit-nav-scroll" id="a-nav"></div>
+          <div class="audit-nav-foot">
+            <span class="path" id="a-path" title=""></span>
+            <button type="button" id="a-verify">校验完整性</button>
+            <p class="msg" id="a-verify-msg"></p>
+          </div>
+        </nav>
+        <div class="audit-list">
+          <div class="audit-bar">
+            <input type="search" id="a-q" placeholder="搜命令、路径、原因…" autocomplete="off">
+            <button type="button" id="a-refresh">刷新</button>
+          </div>
+          <p class="audit-note" id="a-summary"></p>
+          <div class="audit-scroll" id="a-out"></div>
+        </div>
+        <div class="audit-detail" id="a-detail">
+          <p class="empty">选一条记录，在这里看命令和输出。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------------------
+         Settings: the appearance of this window, and the global policy.
+         ------------------------------------------------------------------ -->
+    <section id="page-settings" hidden>
+      <div class="page-head"><h2>设置</h2></div>
+
+      <fieldset>
+        <legend>外观</legend>
+        <div class="grid">
+          <div>
+            <label for="s-theme">主题</label>
+            <select id="s-theme">
+              <option value="auto">跟随系统</option>
+              <option value="light">浅色</option>
+              <option value="dark">深色</option>
+            </select>
+          </div>
+          <div>
+            <label for="s-size">字号</label>
+            <select id="s-size">
+              <option value="small">小</option>
+              <option value="normal">中</option>
+              <option value="large">大</option>
+            </select>
+          </div>
+        </div>
+        <p class="hint">只影响这个窗口，存在本机。</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>全局策略</legend>
+        <p class="hint" style="margin-top:0">给所有主机的默认值。哪台主机自己覆盖了，就以那台为准。留空表示用程序内置的默认。</p>
+        <div class="grid">
+          <div>
+            <label for="s-mode">默认模式</label>
+            <select id="s-mode">
+              <option value="">跟随内置默认（允许）</option>
+              <option value="allow">允许（allow）</option>
+              <option value="readonly">只读（readonly）</option>
+              <option value="deny">禁止（deny）</option>
+            </select>
+          </div>
+          <div>
+            <label for="s-disclosure">默认给 agent 看多少身份</label>
+            <select id="s-disclosure">
+              <option value="">跟随内置默认（完整）</option>
+              <option value="full">完整（full）</option>
+              <option value="alias">只给别名（alias）</option>
+              <option value="blind">最少（blind）</option>
+            </select>
+          </div>
+          <div>
+            <label for="s-timeout">默认超时</label>
+            <input id="s-timeout" placeholder="60s">
+          </div>
+          <div>
+            <label for="s-max">默认输出上限（字节）</label>
+            <input id="s-max" type="number" min="0" placeholder="262144">
+          </div>
+        </div>
+        <div class="check" style="margin-top:10px">
+          <input type="checkbox" id="s-redact">
+          <label for="s-redact">输出里的地址和用户名换成 &lt;host&gt;/&lt;user&gt;</label>
+        </div>
+        <p class="hint" id="s-effective"></p>
+      </fieldset>
+
+      <fieldset>
+        <legend>审计</legend>
+        <div class="grid">
+          <div>
+            <label for="s-maxfield">单条记录最多存多少输出（字节）</label>
+            <input id="s-maxfield" type="number" min="0" placeholder="65536">
+          </div>
+          <div>
+            <label for="s-auditpath">日志文件</label>
+            <input id="s-auditpath" readonly>
+          </div>
+        </div>
+        <div class="check" style="margin-top:10px">
+          <input type="checkbox" id="s-store">
+          <label for="s-store">把命令输出也存进审计记录</label>
+        </div>
+        <p class="hint">关掉之后审计里只有命令和结果，没有输出内容。改日志路径请编辑配置文件。</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>管理密码</legend>
+        <p class="hint" style="margin-top:0">只用来打开这个界面，不参与 SSH 登录，命令行也不问它。</p>
+        <div class="grid">
+          <div>
+            <label for="s-old">当前密码</label>
+            <input id="s-old" type="password" autocomplete="current-password">
+          </div>
+          <div>
+            <label for="s-new">新密码</label>
+            <input id="s-new" type="password" autocomplete="new-password">
+          </div>
+          <div>
+            <label for="s-new2">再输入一次</label>
+            <input id="s-new2" type="password" autocomplete="new-password">
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <button type="button" id="s-passwd">修改管理密码</button>
+        </div>
+        <p class="hint">忘记了就删掉 <code>secrets/ui-auth.json</code> 再设一次。已经加密的 SSH 密码不受影响。</p>
+        <div class="result" id="s-passwd-result"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>这个程序</legend>
+        <div class="grid">
+          <div>
+            <label for="s-version">版本</label>
+            <input id="s-version" readonly>
+          </div>
+          <div>
+            <label for="s-cfg">配置文件</label>
+            <input id="s-cfg" readonly>
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <button type="button" id="s-copycfg">复制配置路径</button>
+          <button type="button" id="s-agent">接入 agent…</button>
+        </div>
+      </fieldset>
+
+      <div class="actions">
+        <button type="button" class="primary" id="s-save">保存</button>
+        <button type="button" id="s-reload">还原</button>
+      </div>
+      <div class="result" id="s-result"></div>
+    </section>
   </main>
 </div>
 
@@ -468,20 +829,61 @@ const $ = (id) => document.getElementById(id);
 const TOKEN = new URLSearchParams(location.search).get("token") || sessionStorage.getItem("ssha-token") || "";
 if (TOKEN) sessionStorage.setItem("ssha-token", TOKEN);
 if (location.search) history.replaceState(null, "", location.pathname);
+const SESSION_KEY = "ssha-session";
+let SESSION = sessionStorage.getItem(SESSION_KEY) || "";
 
 let state = null, hosts = [], selected = null, filter = "";
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    ...opts,
-    headers: { "X-SSHA-Token": TOKEN, "Content-Type": "application/json", ...(opts.headers || {}) },
-  });
+  const headers = { "X-SSHA-Token": TOKEN, "Content-Type": "application/json", ...(opts.headers || {}) };
+  if (SESSION) headers["X-SSHA-Session"] = SESSION;
+  const res = await fetch(path, { ...opts, headers });
   const text = await res.text();
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch { body = { error: text }; }
+  if (res.status === 401 && body && body.locked) {
+    SESSION = "";
+    sessionStorage.removeItem(SESSION_KEY);
+    showLock(!!body.configured);
+    throw new Error(body.error || "需要管理密码");
+  }
+  if (res.status === 401 && body && body.code === "password") throw new Error(body.error || "管理密码不对");
   if (res.status === 401) throw new Error("token 缺失或已失效");
   if (!res.ok) throw new Error((body && body.error) || res.statusText);
   return body;
+}
+
+function rememberSession(body) {
+  SESSION = (body && body.session) || "";
+  if (SESSION) sessionStorage.setItem(SESSION_KEY, SESSION);
+  else sessionStorage.removeItem(SESSION_KEY);
+}
+
+function showLock(configured) {
+  $("lock").hidden = false;
+  $("shell").inert = true;
+  document.querySelector("header").inert = true;
+  $("lock-now").hidden = true;
+  $("lock-setup").hidden = !!configured;
+  $("lock-unlock").hidden = !configured;
+  $("lock-setup-error").textContent = "";
+  $("lock-error").textContent = "";
+  if (configured) {
+    $("lock-title").textContent = "输入管理密码";
+    $("lock-hint").textContent = "才能查看主机、审计和设置。";
+    $("lock-password").focus();
+  } else {
+    $("lock-title").textContent = "设置管理密码";
+    $("lock-hint").textContent = "打开这个界面之前都要输入。它不参与 SSH 登录，命令行也不问它。";
+    $("lock-new").focus();
+  }
+}
+
+function hideLock() {
+  $("lock").hidden = true;
+  $("shell").inert = false;
+  document.querySelector("header").inert = false;
+  $("lock-now").hidden = false;
 }
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -492,19 +894,68 @@ const commas = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
 // keywords (allow/readonly/deny, key/agent/password) they map to.
 const MODES = { allow: "允许", readonly: "只读", deny: "禁止" };
 const AUTHS = { key: "私钥", agent: "ssh-agent", password: "密码" };
-const modeLabel = (m) => MODES[m] || m;
-const authLabel = (a) => AUTHS[a] || a;
+const DECISIONS = { allowed: "已允许", denied: "已拒绝" };
+const TYPES = { exec: "执行命令", upload: "上传", download: "下载" };
+const DISCLOSURES = { full: "完整", alias: "只给别名", blind: "最少" };
+const modeLabel = (m) => MODES[m] || m || "";
+const authLabel = (a) => AUTHS[a] || a || "";
+const decisionLabel = (d) => DECISIONS[d] || d || "";
+const typeLabel = (t) => TYPES[t] || t || "";
+const disclosureLabel = (d) => DISCLOSURES[d] || d || "";
+
+// Preferences live in local storage: they are about this window, not about who
+// may ssh where, so they do not belong in the config file.
+const store = {
+  get(key, fallback) { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem(key, value); } catch { /* no persistence, no problem */ } },
+};
 
 const setStatus = (msg, bad) => { const el = $("status"); el.textContent = msg; el.style.color = bad ? "var(--bad)" : ""; };
 
-// Exactly one panel is visible at a time.
+// Three pages, and on the first of them exactly one panel at a time. The host
+// list belongs to the hosts page, so the other two get its width.
 const PANELS = ["nothing", "gate", "form", "import", "agent"];
+const VIEWS = ["hosts", "audit", "settings"];
+let view = "hosts", panel = "nothing";
+
+function renderView() {
+  VIEWS.forEach((v) => {
+    document.querySelector(`.rail button[data-view="${v}"]`).classList.toggle("active", v === view);
+  });
+  const hosts = view === "hosts";
+  $("side").hidden = !hosts;
+  $("shell").classList.toggle("no-list", !hosts);
+  $("shell").classList.toggle("view-audit", view === "audit");
+  $("page-audit").hidden = view !== "audit";
+  $("page-settings").hidden = view !== "settings";
+  PANELS.forEach((p) => { $(p).hidden = !hosts || p !== panel; });
+}
+
+function showView(next) {
+  view = next;
+  renderView();
+  if (view === "audit") loadAudit();
+  if (view === "settings") loadSettings();
+}
+
+// Panels are part of the hosts page. Showing one does not move the operator off
+// the page they are on, because refreshing the state must not yank someone away
+// from the settings they are editing.
 function showPanel(which) {
-  PANELS.forEach((p) => { $(p).hidden = p !== which; });
+  panel = which;
+  renderView();
+}
+
+// The gate, the import flow and the agent panel are all part of the hosts page,
+// and two of them can be opened from the settings page.
+function goHosts(which) {
+  view = "hosts";
+  panel = which;
+  renderView();
 }
 
 function gate(title) {
-  showPanel("gate");
+  goHosts("gate");
   $("list").innerHTML = "";
   $("status").textContent = "";
   $("warnings").innerHTML = "";
@@ -596,15 +1047,15 @@ function loadHost() {
 
 // renderSecretState says where a secret comes from, never what it is.
 function renderSecretState(h) {
-  const describe = (env, file, ready) => {
+  const describe = (env, file, ready, sealed) => {
     if (env) return `使用环境变量 <code>${esc(env)}</code>（优先级高于文件）`;
     if (!file) return "还没有设置";
-    return ready
-      ? `已保存：<code>${esc(file)}</code>`
-      : `指向 <code>${esc(file)}</code>，但文件读不到或者是空的`;
+    if (!ready) return `指向 <code>${esc(file)}</code>，但文件读不到或者是空的`;
+    if (sealed) return "已加密保存，界面不显示原文";
+    return `已保存：<code>${esc(file)}</code>`;
   };
-  $("password-state").innerHTML = describe(h.auth?.password_env, h.auth?.password_file, h.password_ready);
-  $("passphrase-state").innerHTML = describe(h.auth?.passphrase_env, h.auth?.passphrase_file, h.passphrase_ready);
+  $("password-state").innerHTML = describe(h.auth?.password_env, h.auth?.password_file, h.password_ready, h.password_sealed);
+  $("passphrase-state").innerHTML = describe(h.auth?.passphrase_env, h.auth?.passphrase_file, h.passphrase_ready, h.passphrase_sealed);
   if (state && state.secrets_dir) {
     $("secrets-dir").textContent = state.secrets_dir.replace(/^.*\//, "");
     $("secrets-dir").title = state.secrets_dir;
@@ -825,7 +1276,7 @@ async function loadCandidates() {
 function openImport() {
   selected = null;
   renderList();
-  showPanel("import");
+  goHosts("import");
   $("warnings").innerHTML = "";
   loadCandidates();
 }
@@ -910,7 +1361,7 @@ async function loadSkill() {
 function openAgent() {
   selected = null;
   renderList();
-  showPanel("agent");
+  goHosts("agent");
   $("warnings").innerHTML = "";
   loadSkill();
 }
@@ -973,26 +1424,346 @@ $("agent-copy").addEventListener("click", async (e) => {
 // 审计
 // ---------------------------------------------------------------------------
 
+let auditByID = new Map();
+let auditCat = { kind: "all", value: "" };
+let auditLimit = 200;
+let auditSelected = "";
+let auditCounts = null;
+let auditGen = 0;
+
+function auditNote(msg, bad) {
+  const el = $("a-summary");
+  el.textContent = msg;
+  el.style.color = bad ? "var(--bad)" : "";
+}
+
+function todayISO() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+function dayLabel(iso) {
+  const d = new Date(iso);
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const that = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diff = Math.round((start - that) / 86400000);
+  if (diff === 0) return "今天";
+  if (diff === 1) return "昨天";
+  return d.toLocaleDateString();
+}
+
+function timeHM(iso) {
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function catButton(it) {
+  const active = auditCat.kind === it.kind && auditCat.value === it.value;
+  const warn = it.warn && it.n ? " warn" : "";
+  return `<button type="button" class="cat${active ? " active" : ""}" data-kind="${esc(it.kind)}" data-value="${esc(it.value)}"><span>${esc(it.label)}</span><span class="n${warn}">${it.n}</span></button>`;
+}
+
+function renderAuditNav() {
+  const s = auditCounts || { total: 0, decision: {}, type: {}, host: {}, today: 0, last_24h: 0, last_7d: 0, last_30d: 0 };
+  const decision = s.decision || {};
+  const type = s.type || {};
+  const knownType = new Set(["exec", "upload", "download"]);
+  const extraTypes = Object.keys(type).filter((k) => !knownType.has(k)).sort();
+  const hosts = Object.entries(s.host || {}).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const groups = [
+    { title: "", items: [{ kind: "all", value: "", label: "全部", n: s.total || 0 }] },
+    { title: "结果", items: [
+      { kind: "decision", value: "allowed", label: "已允许", n: decision.allowed || 0 },
+      { kind: "decision", value: "denied", label: "已拒绝", n: decision.denied || 0, warn: true },
+    ]},
+    { title: "类型", items: [
+      { kind: "type", value: "exec", label: "执行命令", n: type.exec || 0 },
+      { kind: "type", value: "upload", label: "上传", n: type.upload || 0 },
+      { kind: "type", value: "download", label: "下载", n: type.download || 0 },
+      ...extraTypes.map((k) => ({ kind: "type", value: k, label: typeLabel(k), n: type[k] || 0 })),
+    ]},
+    { title: "时间", items: [
+      { kind: "time", value: "today", label: "今天", n: s.today || 0 },
+      { kind: "time", value: "24h", label: "近 24 小时", n: s.last_24h || 0 },
+      { kind: "time", value: "7d", label: "近 7 天", n: s.last_7d || 0 },
+      { kind: "time", value: "30d", label: "近 30 天", n: s.last_30d || 0 },
+    ]},
+  ];
+  let html = groups.map((g) => (g.title ? `<h3>${esc(g.title)}</h3>` : "") + g.items.map(catButton).join("")).join("");
+  if (hosts.length) {
+    html += `<h3>主机</h3>` + hosts.map(([name, n]) => catButton({ kind: "host", value: name, label: name, n })).join("");
+  }
+  $("a-nav").innerHTML = html;
+}
+
+function auditQuery() {
+  const params = new URLSearchParams();
+  params.set("limit", String(auditLimit));
+  const q = $("a-q").value.trim();
+  if (q) params.set("q", q);
+  if (auditCat.kind === "decision" || auditCat.kind === "type" || auditCat.kind === "host") {
+    params.set(auditCat.kind, auditCat.value);
+  }
+  if (auditCat.kind === "time") {
+    params.set("since", auditCat.value === "today" ? todayISO() : auditCat.value);
+  }
+  return params;
+}
+
+function renderAuditList(records, meta) {
+  const total = auditCounts ? auditCounts.total : 0;
+  if (!records.length) {
+    const empty = auditCat.kind === "all" && !$("a-q").value.trim()
+      ? "还没有审计记录。agent 执行命令之后会出现在这里。"
+      : "这个分类里没有记录。";
+    $("a-out").innerHTML = `<p class="empty">${esc(empty)}</p>`;
+    auditNote(total ? `没有匹配的记录，日志共 ${total} 条` : "日志是空的", false);
+    return;
+  }
+  let html = "";
+  let day = "";
+  for (const x of records) {
+    const label = dayLabel(x.time);
+    if (label !== day) {
+      day = label;
+      html += `<div class="audit-day">${esc(label)}</div>`;
+    }
+    const what = x.command || x.path || typeLabel(x.type);
+    const extra = [decisionLabel(x.decision), typeLabel(x.type)];
+    if (x.duration_ms) extra.push(x.duration_ms + " ms");
+    html += `<div class="audit-row${x.id === auditSelected ? " active" : ""}${x.decision === "denied" ? " is-denied" : ""}" role="button" tabindex="0" data-id="${esc(x.id)}">
+      <span class="audit-time">${esc(timeHM(x.time))}</span>
+      <span class="audit-row-body">
+        <span class="audit-cmd">${esc(what)}</span>
+        <span class="audit-meta"><span class="host">${esc(x.host || "")}</span> ${esc(extra.filter(Boolean).join("  "))}</span>
+      </span>
+    </div>`;
+  }
+  if (meta.maybe_more) html += `<button type="button" class="audit-more" id="a-more">再看更早的</button>`;
+  $("a-out").innerHTML = html;
+  const scope = auditCat.kind === "all" && !$("a-q").value.trim() ? "显示" : "这个分类";
+  auditNote(`${scope} ${records.length} 条` + (meta.maybe_more ? "，后面还有" : "") + (total ? `，日志共 ${total} 条` : ""), false);
+}
+
+function renderAuditDetail(x) {
+  const el = $("a-detail");
+  if (!x) {
+    el.innerHTML = `<p class="empty">选一条记录，在这里看命令和输出。</p>`;
+    return;
+  }
+  const facts = [
+    ["主机", x.host],
+    ["路径", x.path && x.command ? x.path : ""],
+    ["工作目录", x.cwd],
+    ["退出码", x.exit_code === undefined ? "" : String(x.exit_code)],
+    ["耗时", x.duration_ms ? x.duration_ms + " ms" : ""],
+    ["字节", x.bytes ? String(x.bytes) : ""],
+    ["来源", [x.actor, x.machine].filter(Boolean).join(" @ ")],
+    ["会话", x.session_id],
+    ["序号", x.seq ? String(x.seq) : ""],
+    ["记录", x.id],
+    ["哈希", x.hash],
+  ].filter(([, v]) => v !== undefined && v !== null && v !== "");
+  const output = [["输出", x.stdout], ["错误输出", x.stderr]]
+    .filter(([, v]) => v)
+    .map(([label, v]) => `<div class="label">${esc(label)}${x.truncated ? "（已截断）" : ""}</div><pre>${esc(v)}</pre>`)
+    .join("");
+  const decisionClass = x.decision === "denied" ? "bad" : "ok";
+  el.innerHTML = `
+    <p class="when">${esc(new Date(x.time).toLocaleString())}</p>
+    <h2>${esc(x.command || x.path || typeLabel(x.type))}</h2>
+    <div class="tags">
+      <span class="tag ${decisionClass}">${esc(decisionLabel(x.decision))}</span>
+      <span class="tag">${esc(typeLabel(x.type))}</span>
+      ${x.host ? `<span class="tag">${esc(x.host)}</span>` : ""}
+    </div>
+    ${x.reason ? `<p class="reason">${esc(x.reason)}</p>` : ""}
+    <dl class="audit-facts">${facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
+    ${output || (x.decision === "allowed" ? `<p class="empty">这条没有保存输出。</p>` : "")}
+    <div class="row" style="margin-top:12px">
+      <button type="button" data-copy-json="${esc(x.id)}">复制这条 JSON</button>
+    </div>`;
+}
+
 async function loadAudit() {
+  const gen = ++auditGen;
+  auditNote("读取中…", false);
   try {
-    const r = await api("/api/audit?limit=50" + (selected ? "&host=" + encodeURIComponent(selected) : ""));
-    $("audit-path").textContent = r.audit_log;
-    const records = r.records || [];
-    if (!records.length) { $("audit-out").innerHTML = `<p class="empty">暂无记录</p>`; return; }
-    $("audit-out").innerHTML = `<table>
-      <tr><th>时间</th><th>主机</th><th>结果</th><th>命令</th></tr>
-      ${records.slice().reverse().map((x) => `<tr>
-        <td>${esc(new Date(x.time).toLocaleString())}</td>
-        <td>${esc(x.host)}</td>
-        <td class="${x.decision === "denied" ? "denied" : ""}">${x.decision === "denied" ? "已拒绝" : "已允许"}</td>
-        <td class="cmd">${esc(x.command || x.path || "")}</td>
-      </tr>`).join("")}</table>`;
+    const [list, summary] = await Promise.all([
+      api("/api/audit?" + auditQuery().toString()),
+      api("/api/audit/summary?today=" + encodeURIComponent(todayISO())),
+    ]);
+    if (gen !== auditGen) return;
+    auditCounts = summary;
+    renderAuditNav();
+    const path = list.audit_log || summary.audit_log || "";
+    $("a-path").textContent = path;
+    $("a-path").title = path;
+    const records = (list.records || []).slice().reverse();
+    auditByID = new Map(records.map((x) => [x.id, x]));
+    if (auditSelected && !auditByID.has(auditSelected)) auditSelected = "";
+    if (!auditSelected && records[0]) auditSelected = records[0].id;
+    renderAuditList(records, list);
+    renderAuditDetail(auditSelected ? auditByID.get(auditSelected) : null);
   } catch (err) {
-    $("audit-out").innerHTML = `<p class="empty">${esc(err.message || err)}</p>`;
+    if (gen !== auditGen) return;
+    $("a-out").innerHTML = "";
+    auditNote(String(err.message || err), true);
   }
 }
-$("audit-refresh").addEventListener("click", loadAudit);
-$("auditbox").addEventListener("toggle", () => { if ($("auditbox").open) loadAudit(); });
+
+$("a-nav").addEventListener("click", (e) => {
+  const btn = e.target.closest("button.cat");
+  if (!btn) return;
+  auditCat = { kind: btn.dataset.kind, value: btn.dataset.value || "" };
+  auditLimit = 200;
+  auditSelected = "";
+  loadAudit();
+});
+
+$("a-out").addEventListener("click", (e) => {
+  if (e.target.closest("#a-more")) {
+    auditLimit = Math.min(auditLimit + 300, 5000);
+    loadAudit();
+    return;
+  }
+  const row = e.target.closest(".audit-row");
+  if (!row) return;
+  auditSelected = row.dataset.id;
+  document.querySelectorAll(".audit-row.active").forEach((r) => r.classList.remove("active"));
+  row.classList.add("active");
+  renderAuditDetail(auditByID.get(row.dataset.id));
+});
+
+$("a-out").addEventListener("keydown", (e) => {
+  const row = e.target.closest(".audit-row");
+  if (!row || (e.key !== "Enter" && e.key !== " ")) return;
+  e.preventDefault();
+  row.click();
+});
+
+$("a-detail").addEventListener("click", (e) => {
+  const copy = e.target.closest("button[data-copy-json]");
+  if (copy) copyToClipboard(JSON.stringify(auditByID.get(copy.dataset.copyJson), null, 2), copy);
+});
+
+$("a-refresh").addEventListener("click", loadAudit);
+let auditTimer = null;
+$("a-q").addEventListener("input", () => { clearTimeout(auditTimer); auditTimer = setTimeout(loadAudit, 250); });
+
+$("a-verify").addEventListener("click", async () => {
+  const msg = $("a-verify-msg");
+  $("a-verify").disabled = true;
+  msg.textContent = "校验中…";
+  msg.style.color = "";
+  try {
+    const r = await api("/api/audit/verify", { method: "POST" });
+    msg.textContent = `哈希链完整，${r.records} 条`;
+    msg.style.color = "var(--ok)";
+  } catch (err) {
+    msg.textContent = String(err.message || err);
+    msg.style.color = "var(--bad)";
+  } finally {
+    $("a-verify").disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 外观
+// ---------------------------------------------------------------------------
+
+const THEME_KEY = "ssha.theme", SIZE_KEY = "ssha.size";
+const themeQuery = window.matchMedia("(prefers-color-scheme: light)");
+
+// "Follow the system" is resolved here and written to data-theme, so the
+// stylesheet needs one palette per theme and no second copy behind a media
+// query that could disagree with the setting.
+function applyAppearance() {
+  const theme = store.get(THEME_KEY, "auto");
+  const light = theme === "light" || (theme === "auto" && themeQuery.matches);
+  document.documentElement.dataset.theme = light ? "light" : "dark";
+  document.documentElement.dataset.size = store.get(SIZE_KEY, "normal");
+}
+themeQuery.addEventListener("change", applyAppearance);
+applyAppearance();
+
+$("s-theme").addEventListener("change", () => {
+  store.set(THEME_KEY, $("s-theme").value);
+  applyAppearance();
+});
+$("s-size").addEventListener("change", () => {
+  store.set(SIZE_KEY, $("s-size").value);
+  applyAppearance();
+});
+
+// ---------------------------------------------------------------------------
+// 设置
+// ---------------------------------------------------------------------------
+
+function loadSettings() {
+  const p = (state && state.policy) || {};
+  $("s-mode").value = p.mode || "";
+  $("s-disclosure").value = p.disclosure || "";
+  $("s-timeout").value = p.timeout || "";
+  $("s-max").value = p.max_output_bytes || "";
+  $("s-redact").checked = !!p.redact_output;
+
+  const a = (state && state.audit) || {};
+  $("s-store").checked = !!a.store_output;
+  $("s-maxfield").value = a.max_field_bytes || "";
+  $("s-auditpath").value = a.path || "";
+
+  $("s-version").value = (state && state.version) || "";
+  $("s-cfg").value = (state && state.config_path) || "";
+  $("s-theme").value = store.get(THEME_KEY, "auto");
+  $("s-size").value = store.get(SIZE_KEY, "normal");
+
+  const g = (state && state.global_policy) || {};
+  $("s-effective").textContent = g.mode
+    ? `现在生效：${modeLabel(g.mode)}，超时 ${g.timeout}，输出上限 ${g.max_output_bytes} 字节，身份${disclosureLabel(g.disclosure)}`
+    + (g.redact_output ? "，输出已遮蔽" : "")
+    : "";
+  $("s-result").textContent = "";
+  $("s-result").className = "result";
+}
+
+$("s-save").addEventListener("click", async () => {
+  const payload = {
+    policy: {
+      mode: $("s-mode").value,
+      disclosure: $("s-disclosure").value,
+      redact_output: $("s-redact").checked,
+    },
+    audit: {
+      store_output: $("s-store").checked,
+      max_field_bytes: Number($("s-maxfield").value) || 0,
+    },
+  };
+  // An empty box means "leave it at the built-in default", which the api turns
+  // into the absence of the key rather than into a pinned zero.
+  if ($("s-timeout").value.trim()) payload.policy.timeout = $("s-timeout").value.trim();
+  if (Number($("s-max").value) > 0) payload.policy.max_output_bytes = Number($("s-max").value);
+
+  $("s-save").disabled = true;
+  try {
+    await api("/api/settings", { method: "POST", body: JSON.stringify(payload) });
+    await refresh();
+    loadSettings();
+    $("s-result").className = "result ok";
+    $("s-result").textContent = "已保存到 " + state.config_path;
+  } catch (err) {
+    $("s-result").className = "result bad";
+    $("s-result").textContent = "保存失败：" + String(err.message || err);
+  } finally {
+    $("s-save").disabled = false;
+  }
+});
+$("s-reload").addEventListener("click", loadSettings);
+$("s-copycfg").addEventListener("click", (e) => {
+  copyToClipboard(state ? state.config_path : "", e.target);
+});
+$("s-agent").addEventListener("click", openAgent);
 
 // ---------------------------------------------------------------------------
 // 启动
@@ -1008,6 +1779,7 @@ async function refresh() {
   }
   renderList();
   if (selected && hosts.some((h) => h.name === selected)) loadHost();
+
   setStatus(`${hosts.length} 台主机`);
 }
 
@@ -1037,19 +1809,137 @@ $("new").addEventListener("click", () => {
   $("f-name").focus();
 });
 
-// Ctrl+S saves, the way a desktop app is expected to.
+$("rail").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-view]");
+  if (btn) showView(btn.dataset.view);
+});
+
+// Ctrl+S saves, the way a desktop app is expected to, and Ctrl+1/2/3 move
+// between the pages.
 document.addEventListener("keydown", (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+  if (!$("lock").hidden) return;
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const key = e.key.toLowerCase();
+  if (key === "s") {
     e.preventDefault();
-    if (!$("form").hidden) $("form").requestSubmit();
+    if (view === "settings") $("s-save").click();
+    else if (!$("form").hidden) $("form").requestSubmit();
+    return;
+  }
+  if (key === "1") { e.preventDefault(); showView("hosts"); }
+  if (key === "2") { e.preventDefault(); showView("audit"); }
+  if (key === "3") { e.preventDefault(); showView("settings"); }
+});
+
+renderView();
+
+async function enterWithSession(body) {
+  rememberSession(body);
+  hideLock();
+  await refresh();
+}
+
+$("lock-setup").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector("button");
+  btn.disabled = true;
+  $("lock-setup-error").textContent = "";
+  try {
+    const body = await api("/api/session", {
+      method: "POST",
+      body: JSON.stringify({ password: $("lock-new").value, confirm: $("lock-confirm").value }),
+    });
+    $("lock-new").value = "";
+    $("lock-confirm").value = "";
+    await enterWithSession(body);
+  } catch (err) {
+    $("lock-setup-error").textContent = String(err.message || err);
+  } finally {
+    btn.disabled = false;
   }
 });
 
-if (!TOKEN) {
-  gate();
-} else {
-  refresh().catch((err) => gate(String(err.message || err)));
+$("lock-unlock").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector("button");
+  btn.disabled = true;
+  $("lock-error").textContent = "";
+  try {
+    const body = await api("/api/session", {
+      method: "POST",
+      body: JSON.stringify({ password: $("lock-password").value }),
+    });
+    $("lock-password").value = "";
+    await enterWithSession(body);
+  } catch (err) {
+    $("lock-error").textContent = String(err.message || err);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("lock-now").addEventListener("click", async () => {
+  try { await api("/api/session/lock", { method: "POST" }); } catch { /* still lock the window */ }
+  SESSION = "";
+  sessionStorage.removeItem(SESSION_KEY);
+  let configured = true;
+  try {
+    const st = await api("/api/session");
+    configured = !!st.configured;
+  } catch { /* keep the unlock form */ }
+  showLock(configured);
+});
+
+$("s-passwd").addEventListener("click", async () => {
+  const out = $("s-passwd-result");
+  out.className = "result";
+  out.textContent = "";
+  $("s-passwd").disabled = true;
+  try {
+    const body = await api("/api/session/password", {
+      method: "POST",
+      body: JSON.stringify({
+        old: $("s-old").value,
+        password: $("s-new").value,
+        confirm: $("s-new2").value,
+      }),
+    });
+    rememberSession(body);
+    $("s-old").value = "";
+    $("s-new").value = "";
+    $("s-new2").value = "";
+    out.className = "result ok";
+    out.textContent = "管理密码已修改";
+  } catch (err) {
+    out.className = "result bad";
+    out.textContent = String(err.message || err);
+  } finally {
+    $("s-passwd").disabled = false;
+  }
+});
+
+async function boot() {
+  if (!TOKEN) {
+    $("lock").hidden = true;
+    $("shell").inert = false;
+    document.querySelector("header").inert = false;
+    gate();
+    return;
+  }
+  try {
+    const st = await api("/api/session");
+    if (!st.unlocked) {
+      showLock(!!st.configured);
+      return;
+    }
+    hideLock();
+    await refresh();
+  } catch (err) {
+    if ($("lock").hidden) gate(String(err.message || err));
+  }
 }
+
+boot();
 </script>
 </body>
 </html>

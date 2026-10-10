@@ -78,13 +78,14 @@ make package-macos    # 只在 macOS 上有意义
 | | 路径 |
 |---|---|
 | 配置 | `~/.config/ssha/config.yaml`（系统级装在 `/etc/ssha/config.yaml`） |
-| 密码 | 配置旁边的 `secrets/<主机名>.password`，0600 |
+| 密码 | 配置旁边的 `secrets/<主机名>.password`，0600，加密保存 |
+| 管理密码 | `secrets/ui-auth.json`，只锁配置界面 |
 | 审计日志 | `~/.local/share/ssha/audit.jsonl`（或配置里 `audit.path`） |
 
-第一次打开时如果没有配置，ssha 会从模板生成一份。密码直接在界面里输，
-它会写成 0600 的文件，配置里只留一行 `password_file` 指过去。
+第一次打开时如果没有配置，ssha 会从模板生成一份。界面要先设管理密码。主机密码直接在界面里输，
+它会加密写成 0600 的文件，配置里只留一行 `password_file` 指过去。命令行和 MCP 自动解密，不用解锁命令。
 
-配置文件里**没有明文密码**，但主机清单和策略都在里面，建议保持 0600。
+配置文件里**没有明文密码**，但主机清单和策略都在里面，建议保持 0600。忘记管理密码就删掉 `secrets/ui-auth.json` 再设一次，已经加密的 SSH 密码不受影响。
 
 ---
 
@@ -238,7 +239,8 @@ journalctl --user -u ssha-ui -f
 | 页面显示「这个界面需要命令行里那个 token」 | 你打开的是裸地址。用打印出来的带 `?token=` 的那条，或从 `--token-file` 里读 |
 | `cannot listen on ... address already in use` | 端口被占（老的 headless 服务？）。`ss -ltnp \| grep 8770` |
 | agent 报 `no password source configured` | 该主机没配密码。在桌面应用里选「密码」直接输入，或填 `password_file` / `password_env` |
-| `hosts test` 报 `unknown host key` | 没钉主机密钥。界面里点「扫描主机密钥」，或 `ssha host-key <addr> --write` |
+| agent 报 `seal key is missing` 或 `cannot be decrypted` | `secrets/.seal-key` 和密码文件被拆开了，或密钥文件坏了。密钥丢了就只能重新输入 SSH 密码 |
+| `hosts test` 报 `unknown host key` | 这把密钥没在 known_hosts 里（22 端口已信任的同一把钥匙会自动沿用）。界面里点「扫描主机密钥」，或 `ssha host-key <addr> --write` |
 | 找不到 skill | 确认装到了 agent 会扫的目录（通常是 `~/.agents/skills`），然后重启 agent |
 
 ## 八、卸载

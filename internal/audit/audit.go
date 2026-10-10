@@ -220,9 +220,29 @@ type Filter struct {
 	Decision  string
 	SessionID string
 	Since     time.Time
+	// Query is a case-insensitive substring search over the fields that say what
+	// happened: host, command, path, reason, type and actor. It is what the
+	// editor's search box and `audit ls --query` both send.
+	Query string
+}
+
+// matchesQuery is a substring search rather than a regular expression on
+// purpose: the operator is typing into a search box, and an unclosed bracket
+// should return nothing, not an error.
+func (f Filter) matchesQuery(r *Record) bool {
+	q := strings.ToLower(f.Query)
+	for _, field := range []string{r.Host, r.Command, r.Path, r.Reason, r.Type, r.Actor} {
+		if strings.Contains(strings.ToLower(field), q) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f Filter) match(r *Record) bool {
+	if f.Query != "" && !f.matchesQuery(r) {
+		return false
+	}
 	if f.Host != "" && r.Host != f.Host {
 		return false
 	}

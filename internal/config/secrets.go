@@ -51,35 +51,26 @@ func secretName(host string) string {
 }
 
 // WriteSecret stores a secret with mode 0600, creating the directory 0700, and
-// returns the path written. The value must not be empty: clearing a secret is
-// DeleteSecret's job.
+// returns the path written. The value is sealed before it hits disk. It must
+// not be empty: clearing a secret is DeleteSecret's job.
 func WriteSecret(configPath, host string, kind SecretKind, value string) (string, error) {
 	if strings.TrimSpace(value) == "" {
 		return "", fmt.Errorf("refusing to store an empty %s", kind)
 	}
 	dir := SecretsDir(configPath)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
 	path := SecretPath(configPath, host, kind)
-	// Write then rename, so a crash cannot leave a half-written secret behind.
-	tmp, err := os.CreateTemp(dir, "."+secretName(host)+".*")
+	err := withSealLock(dir, func() error {
+		key, err := loadOrCreateSealKey(dir)
+		if err != nil {
+			return err
+		}
+		sealed, err := seal(key, []byte(value))
+		if err != nil {
+			return err
+		}
+		return writePrivate(dir, path, []byte(sealed+"\n"))
+	})
 	if err != nil {
-		return "", err
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return "", err
-	}
-	if _, err := tmp.WriteString(value + "\n"); err != nil {
-		tmp.Close()
-		return "", err
-	}
-	if err := tmp.Close(); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
 		return "", err
 	}
 	return path, nil

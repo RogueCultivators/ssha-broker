@@ -190,7 +190,8 @@ func clientConfig(t Target, onHostKey func(ssh.PublicKey)) (*ssh.ClientConfig, e
 }
 
 // resolveSecret reads a secret from an environment variable, then a file, then
-// an interactive prompt. A file holds the secret on its first line.
+// an interactive prompt. A file holds either a sealed secret or, for a
+// hand-written file, the secret on its first line.
 func resolveSecret(t Target, envVar, file, what string) (string, error) {
 	if envVar != "" {
 		v := os.Getenv(envVar)
@@ -201,11 +202,10 @@ func resolveSecret(t Target, envVar, file, what string) (string, error) {
 	}
 	if file != "" {
 		p := config.ExpandHome(file)
-		b, err := os.ReadFile(p)
+		v, err := config.ReadSecretFile(p)
 		if err != nil {
 			return "", fmt.Errorf("host %s: read %s: %w", t.Name, p, err)
 		}
-		v := strings.TrimRight(string(b), "\r\n")
 		if v == "" {
 			return "", fmt.Errorf("host %s: %s is empty", t.Name, p)
 		}
@@ -356,21 +356,57 @@ func hostKeyCallback(t Target) (ssh.HostKeyCallback, error) {
 			return nil
 		}
 		var ke *knownhosts.KeyError
-		if errors.As(err, &ke) {
-			got := ssh.FingerprintSHA256(key)
-			if len(ke.Want) == 0 {
-				return fmt.Errorf("unknown host key for %s (%s %s); add it to %s or set host_key.fingerprints",
-					hostname, key.Type(), got, p)
-			}
-			want := make([]string, 0, len(ke.Want))
-			for _, w := range ke.Want {
-				want = append(want, w.Key.Type()+" "+ssh.FingerprintSHA256(w.Key))
-			}
-			return fmt.Errorf("host key mismatch for %s: server offered %s %s, but %s has %s; verify the server or refresh %s",
-				hostname, key.Type(), got, p, strings.Join(want, ", "), p)
+		if !errors.As(err, &ke) {
+			return err
 		}
-		return err
+		// OpenSSH records a port-22 key as the bare host, and any other port as
+		// [host]:port, so a host already trusted on 22 looks unknown on 10222.
+		// The key identifies the server, not the port: accept this only when the
+		// exact key is already on file for port 22. A different key stays unknown,
+		// and a mismatch already recorded for this exact port is never papered over.
+		if len(ke.Want) == 0 && knownOnDefaultPort(inner, hostname, remote, key) {
+			return nil
+		}
+		got := ssh.FingerprintSHA256(key)
+		if len(ke.Want) == 0 {
+			return fmt.Errorf("unknown host key for %s (%s %s); add it to %s or set host_key.fingerprints",
+				hostname, key.Type(), got, p)
+		}
+		want := make([]string, 0, len(ke.Want))
+		for _, w := range ke.Want {
+			want = append(want, w.Key.Type()+" "+ssh.FingerprintSHA256(w.Key))
+		}
+		return fmt.Errorf("host key mismatch for %s: server offered %s %s, but %s has %s; verify the server or refresh %s",
+			hostname, key.Type(), got, p, strings.Join(want, ", "), p)
 	}, nil
+}
+
+// knownOnDefaultPort reports whether key is already trusted for this host on
+// port 22. knownhosts prefers the address argument when it contains a port, so
+// the real remote port is ignored and only the port-22 record is consulted.
+func knownOnDefaultPort(cb ssh.HostKeyCallback, hostname string, remote net.Addr, key ssh.PublicKey) bool {
+	host, port, ok := callbackHostPort(hostname, remote)
+	if !ok || port == "22" || remote == nil {
+		return false
+	}
+	return cb(net.JoinHostPort(host, "22"), remote, key) == nil
+}
+
+func callbackHostPort(hostname string, remote net.Addr) (host, port string, ok bool) {
+	if h, p, err := net.SplitHostPort(hostname); err == nil && h != "" && p != "" {
+		return h, p, true
+	}
+	if remote == nil {
+		return "", "", false
+	}
+	h, p, err := net.SplitHostPort(remote.String())
+	if err != nil || h == "" || p == "" {
+		return "", "", false
+	}
+	if hostname != "" && !strings.Contains(hostname, ":") {
+		h = hostname
+	}
+	return h, p, true
 }
 
 func normalizeFP(fp string) string {

@@ -90,6 +90,11 @@ func OpenWithOptions(cfgPath string, opts Options) (*Broker, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Existing plaintext secrets become sealed the next time anything opens the
+	// config. There is no separate unlock step: the key lives beside the files.
+	if err := config.SealExistingSecrets(cfg.Path()); err != nil {
+		return nil, fmt.Errorf("seal stored secrets: %w", err)
+	}
 	policies, err := policy.NewSet(cfg)
 	if err != nil {
 		return nil, err

@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/ssh"
+
+	"ssha/internal/config"
 )
 
 func testPublicKey(t *testing.T) ssh.PublicKey {
@@ -43,6 +45,28 @@ func TestResolveSecretPrefersTheEnvironment(t *testing.T) {
 	}
 	if got != "from-env" {
 		t.Errorf("got %q, want the environment value", got)
+	}
+}
+
+func TestResolveSecretDecryptsASealedFile(t *testing.T) {
+	dir := t.TempDir()
+	path, err := config.WriteSecret(filepath.Join(dir, "ssha.yaml"), "web", config.SecretPassword, "hunter2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "hunter2") {
+		t.Fatalf("sealed file contains the password: %q", b)
+	}
+	got, err := resolveSecret(Target{Name: "web"}, "", path, "password")
+	if err != nil {
+		t.Fatalf("resolveSecret: %v", err)
+	}
+	if got != "hunter2" {
+		t.Errorf("got %q, want hunter2", got)
 	}
 }
 
