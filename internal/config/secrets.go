@@ -76,10 +76,50 @@ func WriteSecret(configPath, host string, kind SecretKind, value string) (string
 	return path, nil
 }
 
+// GitSecretPath is the sealed file for a git account. It lives in secrets/git/
+// so it cannot collide with an SSH host of the same name.
+func GitSecretPath(configPath, account string, kind SecretKind) string {
+	return filepath.Join(SecretsDir(configPath), "git", secretName(account)+"."+string(kind))
+}
+
+// WriteGitSecret stores a git account secret with the same seal as an SSH
+// password. The key stays in secrets/, not in the git subdirectory.
+func WriteGitSecret(configPath, account string, kind SecretKind, value string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("refusing to store an empty %s", kind)
+	}
+	dir := SecretsDir(configPath)
+	path := GitSecretPath(configPath, account, kind)
+	err := withSealLock(dir, func() error {
+		key, err := loadOrCreateSealKey(dir)
+		if err != nil {
+			return err
+		}
+		sealed, err := seal(key, []byte(value))
+		if err != nil {
+			return err
+		}
+		return writePrivate(filepath.Dir(path), path, []byte(sealed+"\n"))
+	})
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// DeleteGitSecret removes a git account secret. A missing file is not an error.
+func DeleteGitSecret(configPath, account string, kind SecretKind) error {
+	return removeSecret(GitSecretPath(configPath, account, kind))
+}
+
 // DeleteSecret removes a stored secret. A missing file is not an error: the
 // caller's intent ("this host has no stored secret") is already satisfied.
 func DeleteSecret(configPath, host string, kind SecretKind) error {
-	err := os.Remove(SecretPath(configPath, host, kind))
+	return removeSecret(SecretPath(configPath, host, kind))
+}
+
+func removeSecret(path string) error {
+	err := os.Remove(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}

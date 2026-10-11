@@ -95,6 +95,11 @@
     display: flex; width: auto; height: auto; margin: 0; overflow: hidden;
   }
   #page-audit[hidden] { display: none !important; }
+  .git-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; align-items: start; }
+  .git-layout .git-list button { display: block; width: 100%; margin-bottom: 6px; text-align: left; }
+  .git-layout .git-list button.active { border-color: var(--accent); color: var(--text); }
+  .git-layout .git-list button small { display: block; color: var(--muted); font-size: var(--fs-xs); }
+  @media (max-width: 820px) { .git-layout { grid-template-columns: 1fr; } }
 
   input, select, textarea, button { font: inherit; color: inherit; }
   input, select, textarea {
@@ -344,6 +349,13 @@
         <path d="M7 7.5h.01M7 16.5h.01"/>
       </svg>
       主机
+    </button>
+    <button type="button" data-view="git" title="Git（Ctrl+4）">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="10" r="2"/>
+        <path d="M6 8v8M6 12c5 0 7-2 12-2"/>
+      </svg>
+      Git
     </button>
     <button type="button" data-view="audit" title="审计日志（Ctrl+2）">
       <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -658,6 +670,120 @@
       <div class="result" id="result"></div>
     </form>
 
+    <section id="page-git" hidden>
+      <div class="page-head">
+        <h2>Git</h2>
+        <span class="hint">账号留在这台机器上。Agent 只能请求 push / fetch，看不到密码和私钥。</span>
+      </div>
+      <div class="git-layout">
+        <div>
+          <div class="row" style="margin-bottom:8px">
+            <button type="button" id="g-new" style="flex:1">新建账号</button>
+          </div>
+          <div class="git-list" id="g-list"></div>
+        </div>
+        <form id="g-form" hidden>
+          <fieldset>
+            <legend>账号</legend>
+            <div class="grid">
+              <div>
+                <label for="g-name">名称</label>
+                <input id="g-name" autocomplete="off" placeholder="github">
+              </div>
+              <div>
+                <label for="g-hosts">主机名（逗号分隔）</label>
+                <input id="g-hosts" placeholder="github.com" autocomplete="off">
+              </div>
+              <div>
+                <label for="g-prefix">路径前缀（可空）</label>
+                <input id="g-prefix" placeholder="acme" autocomplete="off">
+              </div>
+              <div>
+                <label for="g-description">备注</label>
+                <input id="g-description" autocomplete="off">
+              </div>
+            </div>
+            <p class="hint">主机名是 github.com 这种，不是整段 clone 地址。路径前缀更长的账号优先，用来把同一个主机上的不同组织分开。</p>
+          </fieldset>
+
+          <fieldset>
+            <legend>认证</legend>
+            <div class="grid">
+              <div>
+                <label for="g-auth">方式</label>
+                <select id="g-auth">
+                  <option value="https">用户名 + 密码 / token</option>
+                  <option value="ssh">私钥</option>
+                </select>
+              </div>
+            </div>
+
+            <div id="g-https">
+              <div class="grid">
+                <div>
+                  <label for="g-user">用户名</label>
+                  <input id="g-user" autocomplete="off" placeholder="git 用户名，不是邮箱也可以">
+                </div>
+                <div>
+                  <label for="g-password">密码或 token</label>
+                  <input id="g-password" type="password" autocomplete="new-password" placeholder="留空表示不改">
+                </div>
+              </div>
+              <p class="hint" id="g-password-status"></p>
+              <div class="check">
+                <input type="checkbox" id="g-clear-password"><label for="g-clear-password">清除已保存的密码</label>
+              </div>
+            </div>
+
+            <div id="g-ssh" hidden>
+              <div class="grid">
+                <div>
+                  <label for="g-key">私钥路径</label>
+                  <input id="g-key" placeholder="~/.ssh/id_ed25519" autocomplete="off">
+                </div>
+                <div>
+                  <label for="g-key-env">或私钥内容的环境变量</label>
+                  <input id="g-key-env" autocomplete="off">
+                </div>
+                <div>
+                  <label for="g-passphrase">私钥口令</label>
+                  <input id="g-passphrase" type="password" autocomplete="new-password" placeholder="没有口令就留空">
+                </div>
+              </div>
+              <p class="hint" id="g-passphrase-status"></p>
+              <div class="check">
+                <input type="checkbox" id="g-clear-passphrase"><label for="g-clear-passphrase">清除已保存的口令</label>
+              </div>
+            </div>
+            <p class="hint">界面里输入的密码会加密保存。Agent 和命令行都读不到原文，也不会出现在审计日志里。</p>
+          </fieldset>
+
+          <fieldset>
+            <legend>允许的操作</legend>
+            <div class="row">
+              <label class="check"><input type="checkbox" id="g-op-fetch" checked> fetch</label>
+              <label class="check"><input type="checkbox" id="g-op-pull" checked> pull</label>
+              <label class="check"><input type="checkbox" id="g-op-push" checked> push</label>
+              <label class="check"><input type="checkbox" id="g-op-clone" checked> clone</label>
+              <label class="check"><input type="checkbox" id="g-op-ls" checked> ls-remote</label>
+            </div>
+            <div class="check" style="margin-top:8px">
+              <input type="checkbox" id="g-force"><label for="g-force">允许 force push。默认关闭，模型不能靠加 --force 绕过拒绝。</label>
+            </div>
+            <div class="check">
+              <input type="checkbox" id="g-disabled"><label for="g-disabled">禁用：保留在文件里，但不会被选中</label>
+            </div>
+          </fieldset>
+
+          <div class="actions">
+            <button type="submit" class="primary">保存</button>
+            <button type="button" class="danger" id="g-delete" style="margin-left:auto">删除账号</button>
+          </div>
+          <div class="result" id="g-result"></div>
+        </form>
+      </div>
+    </section>
+
     <!-- ------------------------------------------------------------------
          Audit is a workspace of its own: classify on the left, read the day
          down the middle, open one record on the right. It is not a table
@@ -895,7 +1021,7 @@ const commas = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
 const MODES = { allow: "允许", readonly: "只读", deny: "禁止" };
 const AUTHS = { key: "私钥", agent: "ssh-agent", password: "密码" };
 const DECISIONS = { allowed: "已允许", denied: "已拒绝" };
-const TYPES = { exec: "执行命令", upload: "上传", download: "下载" };
+const TYPES = { exec: "执行命令", upload: "上传", download: "下载", git: "Git" };
 const DISCLOSURES = { full: "完整", alias: "只给别名", blind: "最少" };
 const modeLabel = (m) => MODES[m] || m || "";
 const authLabel = (a) => AUTHS[a] || a || "";
@@ -915,7 +1041,8 @@ const setStatus = (msg, bad) => { const el = $("status"); el.textContent = msg; 
 // Three pages, and on the first of them exactly one panel at a time. The host
 // list belongs to the hosts page, so the other two get its width.
 const PANELS = ["nothing", "gate", "form", "import", "agent"];
-const VIEWS = ["hosts", "audit", "settings"];
+const VIEWS = ["hosts", "audit", "settings", "git"];
+let gitAccounts = [], gitSelected = null;
 let view = "hosts", panel = "nothing";
 
 function renderView() {
@@ -928,6 +1055,7 @@ function renderView() {
   $("shell").classList.toggle("view-audit", view === "audit");
   $("page-audit").hidden = view !== "audit";
   $("page-settings").hidden = view !== "settings";
+  $("page-git").hidden = view !== "git";
   PANELS.forEach((p) => { $(p).hidden = !hosts || p !== panel; });
 }
 
@@ -936,6 +1064,10 @@ function showView(next) {
   renderView();
   if (view === "audit") loadAudit();
   if (view === "settings") loadSettings();
+  if (view === "git") {
+    renderGit();
+    setStatus(`${gitAccounts.length} 个 Git 账号`);
+  }
 }
 
 // Panels are part of the hosts page. Showing one does not move the operator off
@@ -1766,12 +1898,185 @@ $("s-copycfg").addEventListener("click", (e) => {
 $("s-agent").addEventListener("click", openAgent);
 
 // ---------------------------------------------------------------------------
+// Git accounts. The password fields are never filled from the server.
+// ---------------------------------------------------------------------------
+
+const GIT_OPS = [
+  ["g-op-fetch", "fetch"],
+  ["g-op-pull", "pull"],
+  ["g-op-push", "push"],
+  ["g-op-clone", "clone"],
+  ["g-op-ls", "ls-remote"],
+];
+
+function syncGitAuth() {
+  const ssh = $("g-auth").value === "ssh";
+  $("g-https").hidden = ssh;
+  $("g-ssh").hidden = !ssh;
+}
+
+function renderGit() {
+  const list = $("g-list");
+  if (!gitAccounts.length) {
+    list.innerHTML = '<p class="empty">还没有 Git 账号。</p>';
+  } else {
+    list.innerHTML = gitAccounts.map((a) => {
+      const auth = a.auth?.type || "";
+      const ready = auth === "https" ? (a.password_ready ? "密码已加密" : "缺密码") : (a.auth?.key_path || a.auth?.key_env ? "私钥已配置" : "缺私钥");
+      return `<button type="button" data-git="${esc(a.name)}" class="${a.name === gitSelected ? "active" : ""}">${esc(a.name)}<small>${esc(auth)} · ${esc((a.hosts || []).join(", "))} · ${esc(ready)}</small></button>`;
+    }).join("");
+  }
+}
+
+function blankGit() {
+  gitSelected = null;
+  $("g-form").hidden = false;
+  ["g-name", "g-hosts", "g-prefix", "g-description", "g-user", "g-password", "g-key", "g-key-env", "g-passphrase"].forEach((id) => { $(id).value = ""; });
+  $("g-auth").value = "https";
+  $("g-force").checked = false;
+  $("g-disabled").checked = false;
+  $("g-clear-password").checked = false;
+  $("g-clear-passphrase").checked = false;
+  GIT_OPS.forEach(([id]) => { $(id).checked = true; });
+  $("g-password-status").textContent = "还没有保存密码。";
+  $("g-passphrase-status").textContent = "";
+  $("g-result").textContent = "";
+  $("g-name").disabled = false;
+  $("g-delete").hidden = true;
+  syncGitAuth();
+  $("g-name").focus();
+  renderGit();
+}
+
+function loadGit(name) {
+  const a = gitAccounts.find((x) => x.name === name);
+  if (!a) return;
+  gitSelected = name;
+  $("g-form").hidden = false;
+  $("g-name").value = a.name;
+  $("g-name").disabled = true;
+  $("g-hosts").value = (a.hosts || []).join(", ");
+  $("g-prefix").value = a.path_prefix || "";
+  $("g-description").value = a.description || "";
+  $("g-auth").value = a.auth?.type || "https";
+  $("g-user").value = a.auth?.username || "";
+  $("g-password").value = "";
+  $("g-key").value = a.auth?.key_path || "";
+  $("g-key-env").value = a.auth?.key_env || "";
+  $("g-passphrase").value = "";
+  $("g-force").checked = !!a.policy?.allow_force;
+  $("g-disabled").checked = !!a.disabled;
+  $("g-clear-password").checked = false;
+  $("g-clear-passphrase").checked = false;
+  const allow = a.policy?.allow || [];
+  GIT_OPS.forEach(([id, op]) => { $(id).checked = allow.length === 0 || allow.includes(op); });
+  $("g-password-status").textContent = a.password_ready
+    ? (a.password_sealed ? "已加密保存，界面不显示原文。留空表示不改。" : "已保存，但还是明文文件。重新输入一次就会加密。")
+    : "还没有保存密码。Agent 发起 https 操作时会失败。";
+  $("g-passphrase-status").textContent = a.passphrase_ready ? "口令已加密保存，界面不显示原文。" : "";
+  $("g-result").textContent = "";
+  $("g-delete").hidden = false;
+  syncGitAuth();
+  renderGit();
+}
+
+function gitPayload() {
+  const allow = GIT_OPS.filter(([id]) => $(id).checked).map(([, op]) => op);
+  const all = allow.length === GIT_OPS.length;
+  return {
+    name: $("g-name").value.trim(),
+    description: $("g-description").value.trim(),
+    hosts: commas($("g-hosts").value),
+    path_prefix: $("g-prefix").value.trim(),
+    disabled: $("g-disabled").checked,
+    auth: {
+      type: $("g-auth").value,
+      username: $("g-user").value.trim(),
+      key_path: $("g-key").value.trim(),
+      key_env: $("g-key-env").value.trim(),
+      password_file: currentGitFile("password_file"),
+      passphrase_file: currentGitFile("passphrase_file"),
+      password_env: currentGitEnv("password_env"),
+      passphrase_env: currentGitEnv("passphrase_env"),
+    },
+    policy: {
+      allow: all ? [] : allow,
+      allow_force: $("g-force").checked,
+    },
+    password: $("g-password").value,
+    passphrase: $("g-passphrase").value,
+    clear_password: $("g-clear-password").checked,
+    clear_passphrase: $("g-clear-passphrase").checked,
+  };
+}
+
+function currentGit() {
+  return gitAccounts.find((a) => a.name === gitSelected);
+}
+
+function currentGitFile(key) {
+  const a = currentGit();
+  return a && a.auth ? (a.auth[key] || "") : "";
+}
+
+function currentGitEnv(key) {
+  const a = currentGit();
+  return a && a.auth ? (a.auth[key] || "") : "";
+}
+
+$("g-auth").addEventListener("change", syncGitAuth);
+$("g-new").addEventListener("click", blankGit);
+$("g-list").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-git]");
+  if (btn) loadGit(btn.dataset.git);
+});
+$("g-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector("button[type=submit]");
+  btn.disabled = true;
+  $("g-result").textContent = "";
+  try {
+    const body = gitPayload();
+    if (!body.name) throw new Error("名称不能为空");
+    if (!body.hosts.length) throw new Error("至少填一个主机名");
+    if (!body.policy.allow.length && GIT_OPS.every(([id]) => !$(id).checked)) throw new Error("至少留一个操作");
+    await api("/api/git", { method: "POST", body: JSON.stringify(body) });
+    $("g-password").value = "";
+    $("g-passphrase").value = "";
+    gitSelected = body.name;
+    await refresh();
+    loadGit(body.name);
+    $("g-result").textContent = "已保存";
+    $("g-result").className = "result ok";
+  } catch (err) {
+    $("g-result").textContent = String(err.message || err);
+    $("g-result").className = "result bad";
+  } finally {
+    btn.disabled = false;
+  }
+});
+$("g-delete").addEventListener("click", async () => {
+  if (!gitSelected) return;
+  if (!confirm(`删除 Git 账号 ${gitSelected}？已保存的密码会一起删掉。`)) return;
+  try {
+    await api("/api/git/" + encodeURIComponent(gitSelected), { method: "DELETE" });
+    gitSelected = null;
+    $("g-form").hidden = true;
+    await refresh();
+  } catch (err) {
+    $("g-result").textContent = String(err.message || err);
+    $("g-result").className = "result bad";
+  }
+});
+
+// ---------------------------------------------------------------------------
 // 启动
 // ---------------------------------------------------------------------------
 
 async function refresh() {
   state = await api("/api/state");
   hosts = state.hosts || [];
+  gitAccounts = state.git || [];
   $("cfgpath").textContent = state.config_path;
   if (state.secrets_dir) {
     $("secrets-dir").textContent = state.secrets_dir.replace(/^.*\//, "");
@@ -1780,7 +2085,8 @@ async function refresh() {
   renderList();
   if (selected && hosts.some((h) => h.name === selected)) loadHost();
 
-  setStatus(`${hosts.length} 台主机`);
+  if (view === "git") renderGit();
+  setStatus(view === "git" ? `${gitAccounts.length} 个 Git 账号` : `${hosts.length} 台主机`);
 }
 
 $("new").addEventListener("click", () => {
@@ -1823,12 +2129,14 @@ document.addEventListener("keydown", (e) => {
   if (key === "s") {
     e.preventDefault();
     if (view === "settings") $("s-save").click();
+    else if (view === "git" && !$("g-form").hidden) $("g-form").requestSubmit();
     else if (!$("form").hidden) $("form").requestSubmit();
     return;
   }
   if (key === "1") { e.preventDefault(); showView("hosts"); }
   if (key === "2") { e.preventDefault(); showView("audit"); }
   if (key === "3") { e.preventDefault(); showView("settings"); }
+  if (key === "4") { e.preventDefault(); showView("git"); }
 });
 
 renderView();

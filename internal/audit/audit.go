@@ -30,6 +30,9 @@ const (
 	TypeExec     = "exec"
 	TypeUpload   = "upload"
 	TypeDownload = "download"
+	// TypeGit is a local git fetch, pull, push, clone or ls-remote. The host
+	// field holds the git account name, not an SSH host.
+	TypeGit = "git"
 )
 
 // Decisions.

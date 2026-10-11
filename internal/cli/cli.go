@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"ssha/internal/broker"
+	"ssha/internal/gitx"
 )
 
 // Exit codes. They are stable so agents and scripts can branch on them.
@@ -43,6 +44,10 @@ Commands:
   audit ls                 list recent audit records
   audit show <id>          show one audit record
   audit verify             verify the audit hash chain
+  git accounts             list git accounts (no secrets)
+  git which [URL]          show which account a remote would use
+  git push|fetch|pull      run git with the matching account's credential
+  git clone <URL>          clone without putting a password in the URL
   mcp                      serve MCP on stdio (for coding agents)
   ui                       open the config editor in a desktop window
   ui --headless            ...or as a local http service, printing the url
@@ -80,6 +85,20 @@ type App struct {
 
 // Run is the CLI entry point. It returns the process exit code.
 func Run(args []string, version string) int {
+	// Git invokes these before it has a chance to be a subcommand. Their
+	// arguments look like flags (`ssh -o ...`), so they must not go through
+	// flag parsing.
+	if len(args) > 0 {
+		switch args[0] {
+		case "git-credential":
+			return gitx.ServeCredential(args[1:])
+		case "git-ssh":
+			return gitx.ServeSSH(args[1:])
+		case "git-askpass":
+			return gitx.ServeAskpass(args[1:])
+		}
+	}
+
 	a := &App{Version: version, Stdout: os.Stdout, Stderr: os.Stderr}
 
 	global := flag.NewFlagSet("ssha", flag.ContinueOnError)
@@ -131,6 +150,8 @@ func Run(args []string, version string) int {
 		return a.cmdPolicy(sub)
 	case "audit":
 		return a.cmdAudit(sub)
+	case "git":
+		return a.cmdGit(sub)
 	case "mcp":
 		return a.cmdMCP(sub)
 	case "ui":

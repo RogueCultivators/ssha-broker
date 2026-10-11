@@ -149,4 +149,22 @@ hosts:
 #     disclosure: full|alias|blind        # 给 agent 看多少身份信息
 #     redact_output: true                 # 输出里的地址/用户名换成 <host>/<user>
 #     redact_patterns: ['\b\d{1,3}(\.\d{1,3}){3}\b']
+#
+# git:
+#   accounts:
+#     - name: github
+#       hosts: [github.com]                 # 主机名，不是 clone 地址
+#       auth:
+#         type: ssh
+#         key_path: ~/.ssh/id_ed25519
+#     - name: gitlab
+#       hosts: [gitlab.example.com]
+#       path_prefix: acme                   # 更长的前缀优先
+#       auth:
+#         type: https
+#         username: octo
+#         # 界面里输入的密码会加密写到 secrets/git/。自己写的 password_file 保持明文。
+#         password_file: ~/.config/ssha/secrets/git/gitlab.password
+#       policy:
+#         allow_force: false
 # ---------------------------------------------------------------------------

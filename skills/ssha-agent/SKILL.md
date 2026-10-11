@@ -1,6 +1,6 @@
 ---
 name: ssh-agent
-description: Run commands and transfer files on remote servers through the ssha SSH broker, which enforces per-host policy and writes a tamper-evident audit log. Use when the user asks to inspect, run commands on, debug, deploy to, or copy files to/from a remote host, VM, or production server that is configured in ssha.
+description: Run commands and transfer files on remote servers through the ssha SSH broker, and push or fetch git remotes whose credentials stay on the broker. Use when the user asks to inspect, run commands on, debug, deploy to, or copy files to/from a remote host, or to clone, fetch, pull, or push a repository configured in ssha.
 license: MIT
 ---
 
@@ -86,6 +86,29 @@ or denied, is appended to a hash-chained audit log and returns an `audit_id`.
    echo "text" | ssha upload web-1 - /tmp/note.txt
    ssha download web-1 /etc/hosts -
    ```
+
+## Git
+
+Some remotes need an SSH key, others a username and token. Both live on the
+broker. Do not call `git push`, `git fetch`, `git pull`, `git clone` or
+`git ls-remote` yourself, and do not put a token in a URL.
+
+```bash
+ssha git accounts
+ssha git which -C ~/src/app
+ssha git push -C ~/src/app -- main
+ssha git fetch -C ~/src/app
+ssha git clone -C ~/src -- https://github.com/acme/app.git app
+```
+
+Put ssha flags first. Everything after `--` is passed to git. `--force` and a
+refspec that starts with `+` are denied unless that account allows force push.
+A denial is final: do not retry with `--force`.
+
+Exit code `77` means the account or the policy refused it. A non-zero exit
+below that is git's own result; read stderr. If `ssha git accounts` has no
+match for the host, stop and tell the user. Do not create a key, a credential
+helper, or a password file to work around it.
 
 ## Use JSON when you need to branch on the result
 
@@ -185,5 +208,7 @@ ssha audit verify          # confirms the log has not been tampered with
 
 If the agent supports MCP, the same broker is available as a server (`ssha mcp`)
 with the tools `ssh_list_hosts`, `ssh_exec`, `ssh_exec_many`, `ssh_upload`,
-`ssh_download`, `ssh_policy_check` and `ssh_audit`. Prefer those tools when they
-are present; otherwise use this CLI.
+`ssh_download`, `ssh_policy_check`, `ssh_audit`, `git_accounts` and `git`.
+Prefer those tools when they are present; otherwise use this CLI. `git` takes
+`op` (`fetch`, `pull`, `push`, `clone`, `ls-remote`), `dir`, and optionally
+`remote`, `url` and `args`. Never put a password in `url`.

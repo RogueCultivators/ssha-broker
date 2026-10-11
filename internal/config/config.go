@@ -340,6 +340,9 @@ type Config struct {
 	Audit    AuditConfig  `yaml:"audit" json:"audit"`
 	Server   ServerConfig `yaml:"server" json:"server"`
 	Hosts    []Host       `yaml:"hosts" json:"hosts"`
+	// Git holds accounts used to push and fetch. Empty is fine: a config that
+	// only brokers SSH does not need any.
+	Git GitConfig `yaml:"git,omitempty" json:"git,omitempty"`
 
 	// path is the file this config was loaded from.
 	path string
@@ -433,7 +436,7 @@ func (h *Host) MatchQuery(query string) bool {
 
 // Validate checks structural invariants and normalizes defaults.
 func (c *Config) Validate() error {
-	if len(c.Hosts) == 0 {
+	if len(c.Hosts) == 0 && len(c.Git.Accounts) == 0 {
 		return errors.New("config: no hosts defined")
 	}
 	// The global blocks are checked on their own, not only through the hosts
@@ -497,7 +500,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: host %q: proxy_jump: %w", c.Hosts[i].Name, err)
 		}
 	}
-	return nil
+	return c.validateGit()
 }
 
 // validateGlobalSpec rejects a value that is not one of the accepted ones in a
@@ -566,6 +569,12 @@ func (c *Config) resolvePaths() {
 	dir := filepath.Dir(c.path)
 	for i := range c.Hosts {
 		a := &c.Hosts[i].Auth
+		a.KeyPath = anchorPath(dir, a.KeyPath)
+		a.PassphraseFile = anchorPath(dir, a.PassphraseFile)
+		a.PasswordFile = anchorPath(dir, a.PasswordFile)
+	}
+	for i := range c.Git.Accounts {
+		a := &c.Git.Accounts[i].Auth
 		a.KeyPath = anchorPath(dir, a.KeyPath)
 		a.PassphraseFile = anchorPath(dir, a.PassphraseFile)
 		a.PasswordFile = anchorPath(dir, a.PasswordFile)

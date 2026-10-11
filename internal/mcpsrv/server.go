@@ -21,6 +21,7 @@ import (
 	"ssha/internal/audit"
 	"ssha/internal/broker"
 	"ssha/internal/config"
+	"ssha/internal/gitx"
 )
 
 // Instructions are surfaced to the connecting agent at initialize time.
@@ -50,7 +51,14 @@ Rules and behavior:
 - The note is written by hand and is not a schema: read it, and do not assume fields that are not
   there. If it does not say how to operate something, ask the user rather than guessing.
 - Never pass --reveal to the ssha CLI: that flag disables identity hiding and is for the
-  human operator only.`
+  human operator only.
+
+Git:
+- Call git_accounts before a push or fetch. It lists accounts and hosts, never a password or a key.
+- Call git with op set to fetch, pull, push, clone or ls-remote. dir is the repository.
+  Do not run git yourself, and do not put a token or password in the remote URL.
+- Force push is denied unless the account allows it. Do not retry a denial with --force.
+- A non-zero exit_code is git's own result. Read stderr. A decision of denied is final.`
 
 // New builds an MCP server bound to a backend.
 func New(be Backend, name, version string) *mcp.Server {
@@ -270,6 +278,19 @@ type auditOutput struct {
 	Count    int            `json:"count"`
 }
 
+type gitAccountsOutput struct {
+	Accounts []config.GitPublic `json:"accounts"`
+	Count    int                `json:"count"`
+}
+
+type gitInput struct {
+	Op     string   `json:"op" jsonschema:"One of fetch, pull, push, clone, ls-remote."`
+	Dir    string   `json:"dir,omitempty" jsonschema:"Repository directory. For clone, the parent directory the new repository is created in."`
+	Remote string   `json:"remote,omitempty" jsonschema:"Remote name when url is omitted. Defaults to origin."`
+	URL    string   `json:"url,omitempty" jsonschema:"Remote URL. Required for clone. Must not contain a password or token."`
+	Args   []string `json:"args,omitempty" jsonschema:"Extra arguments passed to git after the operation, such as a branch name. Not a shell command."`
+}
+
 // ---------------------------------------------------------------------------
 // Tool registration
 // ---------------------------------------------------------------------------
@@ -437,6 +458,34 @@ func registerTools(s *mcp.Server, be Backend) {
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name:        "git_accounts",
+		Description: "List git accounts this broker can authenticate. No passwords, tokens or key paths are returned. Call this before git.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, gitAccountsOutput, error) {
+		accounts := be.GitAccounts()
+		out := gitAccountsOutput{Accounts: accounts, Count: len(accounts)}
+		return textResult(renderGitAccounts(accounts)), out, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "git",
+		Description: "Run one git fetch, pull, push, clone or ls-remote. The broker supplies the credential for the matching account; you never see it. " +
+			"dir is the repository (for clone, the parent directory). url must not contain a password. " +
+			"args are extra git arguments such as a branch name, not a shell command. Force push is denied unless the account allows it.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in gitInput) (*mcp.CallToolResult, gitx.Result, error) {
+		res, err := be.Git(ctx, gitx.Request{
+			Op:     in.Op,
+			Dir:    in.Dir,
+			Remote: in.Remote,
+			URL:    in.URL,
+			Args:   in.Args,
+		})
+		if res == nil {
+			return nil, gitx.Result{}, err
+		}
+		return textResult(renderGit(res)), *res, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ssh_audit",
 		Description: "Query the tamper-evident audit log of every command this broker has run or denied, across agents and sessions.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in auditInput) (*mcp.CallToolResult, auditOutput, error) {
@@ -588,6 +637,55 @@ func renderAudit(records []audit.Record) string {
 		}
 		b.WriteString("\n")
 	}
+	return b.String()
+}
+
+func renderGitAccounts(accounts []config.GitPublic) string {
+	if len(accounts) == 0 {
+		return "No git accounts. Ask the operator to add one in ssha ui; do not invent a credential."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d git account(s):\n", len(accounts))
+	for _, a := range accounts {
+		fmt.Fprintf(&b, "\n- %s  auth=%s  hosts=%s", a.Name, a.Auth, strings.Join(a.Hosts, ","))
+		if a.PathPrefix != "" {
+			fmt.Fprintf(&b, "  path_prefix=%s", a.PathPrefix)
+		}
+		if a.Username != "" {
+			fmt.Fprintf(&b, "  user=%s", a.Username)
+		}
+		if a.Auth == "https" && !a.PasswordReady {
+			b.WriteString("  password=missing")
+		}
+		if a.Disabled {
+			b.WriteString("  disabled")
+		}
+		if !a.AllowForce {
+			b.WriteString("  force=denied")
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func renderGit(res *gitx.Result) string {
+	if res.Decision == audit.DecisionDenied {
+		return fmt.Sprintf("DENIED: %s\naudit: %s", res.Reason, res.AuditID)
+	}
+	var b strings.Builder
+	if res.Stdout != "" {
+		b.WriteString(clip(res.Stdout))
+		if !strings.HasSuffix(res.Stdout, "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	if res.Stderr != "" {
+		b.WriteString(clip(res.Stderr))
+		if !strings.HasSuffix(res.Stderr, "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	fmt.Fprintf(&b, "exit %d  account %s  audit %s\n", res.ExitCode, res.Account, res.AuditID)
 	return b.String()
 }
 

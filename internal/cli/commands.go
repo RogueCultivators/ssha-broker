@@ -1093,7 +1093,7 @@ func (a *App) cmdAuditLs(args []string) int {
 	limit := fs.Int("limit", 50, "maximum records")
 	since := fs.Duration("since", 0, "only records newer than this duration ago")
 	fs.StringVar(&host, "host", "", "filter by host")
-	fs.StringVar(&typ, "type", "", "filter by type: exec, upload, download")
+	fs.StringVar(&typ, "type", "", "filter by type: exec, upload, download, git")
 	fs.StringVar(&decision, "decision", "", "filter by decision: allowed, denied")
 	query := fs.String("query", "", "search command, path, reason, host and type")
 	if code, ok := a.parse(fs, args); !ok {

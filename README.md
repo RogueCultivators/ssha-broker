@@ -337,6 +337,8 @@ CI 里不想落盘私钥，就用 `key_env: SSHA_PRIVATE_KEY`（值直接是 PEM
 并在配置里只留一行 `password_file` 指过去。密码不会进配置文件、不会进审计日志、
 也不会出现在任何接口返回里。命令行和 MCP 读取时自动解密，不用额外解锁。
 
+Git 的 https 密码和私钥口令走同一套加密，文件在 `secrets/git/`，不和 SSH 主机撞名。见 §4.8。
+
 想自己管就手写 `password_file`。文件只有一行，建议权限 0600：
 
 ```bash
@@ -401,6 +403,48 @@ testbox     ok      key       -    SHA256:Pp9s7QXv... (ecdsa-sha2-nistp256)   10
 legacy-db   FAIL    password  -    -                                          47ms    ... the password is probably wrong
 ```
 
+### 4.8 Git 账号
+
+有的仓库走 SSH 私钥，有的走用户名和 token。账号写在配置里，按**主机名**匹配，
+可选一个路径前缀把同一个主机上的不同组织分开。Agent 只请求 `fetch` / `pull` /
+`push` / `clone` / `ls-remote`，看不到密码，也不能自己改 git 的 credential helper。
+
+```yaml
+git:
+  accounts:
+    - name: github
+      hosts: [github.com]
+      auth:
+        type: ssh
+        key_path: ~/.ssh/id_ed25519
+    - name: gitlab
+      hosts: [gitlab.example.com]
+      path_prefix: acme          # 只匹配 acme/ 下面的仓库，比上面的更长时优先
+      auth:
+        type: https
+        username: octo
+        password_file: ~/.config/ssha/secrets/git/gitlab.password
+      policy:
+        allow_force: false       # 默认就是 false，模型加 --force 会被拒绝
+```
+
+界面里输入的密码和私钥口令会加密写到 `secrets/git/`。自己写的 `password_file`
+保持明文，ssha 不改它。命令行和 MCP 读取时自动解密，没有解锁命令。
+
+```bash
+ssha git accounts
+ssha git which                         # 当前仓库的 origin 会用哪个账号
+ssha git push -C ~/src/app -- main
+ssha git clone -C ~/src -- https://github.com/acme/app.git app
+```
+
+ssha 的参数写在前面，后面的原样交给 git。一次只认证一个远端，所以不接受 `--all`
+和 `--mirror`，也不接受 `-c` 去改 git 配置。仓库原来是 https、账号是 ssh（或反过来）
+时，只改这一次命令用的地址，不改仓库里的 remote。
+
+限制和 SSH 密码一样：同一台机器上的同一个用户能读到 `secrets/.seal-key`，所以这防的是
+「密码不以明文躺在磁盘上」和「agent 看不到凭证」，不是防本机上的你自己。
+
 ## 5. 桌面应用（`ssha ui`）
 
 YAML 不适合做「巡检了一遍发现某台机器少配了主机密钥」这种事，所以带了一个桌面应用：
@@ -434,6 +478,7 @@ WKWebView）。**没有浏览器参与**：不打印 URL，不开端口给外面
   `fingerprints` 钉死，比维护 `known_hosts` 更适合 config-as-code。
 - **从 `~/.ssh/config` 导入**：列出候选别名（已存在的会标出来）、每条的注意事项、勾选后按指定策略
   一次导入（见 §4.5）。
+- **Git 账号单独一页**（Ctrl+4）：按主机名匹配仓库。https 填用户名和 token，ssh 填私钥路径。密码加密保存，界面不显示原文。force push 默认关闭。
 - **审计日志单独一页**：左边按结果、类型、主机和时间分类，中间按天列出，右边看一条记录的命令和输出。
 - **接入 agent 面板**：一键把 skill 装到 `~/.agents/skills`（或 pi / Claude Code 各自的位置、当前项目），
   显示每个位置「未安装 / 需要更新 / 已安装」；可以下载 `SKILL.md`；还会生成可直接复制的 MCP 配置
@@ -566,7 +611,9 @@ claude mcp add ssha -- ssha mcp
 **团队共享 / 远程**：`ssha mcp --http 0.0.0.0:8765`，客户端带
 `Authorization: Bearer $SSHA_TOKEN_CI`，token 到 `server.tokens` 里配。
 
-暴露的 7 个工具：
+限制到某几台 SSH 主机的 token 不能用 Git：那个 token 的范围是主机，不是仓库。本机 stdio 和没有 host 限制的 token 可以。
+
+暴露的工具：
 
 | 工具 | 用途 |
 |---|---|
@@ -577,6 +624,8 @@ claude mcp add ssha -- ssha mcp
 | `ssh_download` | SFTP 读文件（UTF-8 直出，二进制转 base64） |
 | `ssh_policy_check` | 空跑策略，不执行不审计 |
 | `ssh_audit` | 查询审计日志 |
+| `git_accounts` | 列出 Git 账号和匹配的主机名，不含密码和私钥 |
+| `git` | fetch / pull / push / clone / ls-remote，凭证由本机注入 |
 
 > 工具描述里写死了行为约定：denied 不要重试、非零 exit_code 是正常结果、
 > timeout/输出上限只能收紧。这些是给模型看的「接口契约」。
@@ -667,9 +716,13 @@ ssha multi [--host H]... [--tag T]... [--query TEXT] [--concurrency N] [--] <cmd
 ssha upload <host> <local|-> <remote> [--mode 0644]
 ssha download <host> <remote> <local|-> [--max-bytes N]
 ssha policy check <host> [--] <cmd>
-ssha audit ls [--host H] [--type exec|upload|download] [--decision allowed|denied] [--limit N] [--since 1h]
+ssha audit ls [--host H] [--type exec|upload|download|git] [--decision allowed|denied] [--limit N] [--since 1h]
 ssha audit show <id>
 ssha audit verify
+ssha git accounts
+ssha git which [-C DIR] [--remote NAME] [URL]
+ssha git fetch|pull|push|ls-remote [-C DIR] [--remote NAME] [--] [git args]
+ssha git clone [-C DIR] [--] <URL> [directory]
 ssha mcp [--http ADDR] [--verbose]
 ssha ui [--addr 127.0.0.1:8770] [--open] [--token-file PATH]
 ssha skill install [--dir DIR] [--force] | ssha skill print

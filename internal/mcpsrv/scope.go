@@ -7,6 +7,8 @@ import (
 
 	"ssha/internal/audit"
 	"ssha/internal/broker"
+	"ssha/internal/config"
+	"ssha/internal/gitx"
 	"ssha/internal/policy"
 )
 
@@ -24,6 +26,8 @@ type Backend interface {
 	PolicyCheck(host, command string) (policy.Decision, error)
 	AuditQuery(f audit.Filter, limit int) ([]audit.Record, error)
 	AuditPath() string
+	GitAccounts() []config.GitPublic
+	Git(ctx context.Context, req gitx.Request) (*gitx.Result, error)
 }
 
 var _ Backend = (*broker.Broker)(nil)
@@ -158,3 +162,11 @@ func (s *scoped) AuditQuery(f audit.Filter, limit int) ([]audit.Record, error) {
 }
 
 func (s *scoped) AuditPath() string { return s.base.AuditPath() }
+
+func (s *scoped) GitAccounts() []config.GitPublic {
+	return nil
+}
+
+func (s *scoped) Git(context.Context, gitx.Request) (*gitx.Result, error) {
+	return nil, fmt.Errorf("git is not available to MCP token %q: that token is limited to specific SSH hosts", s.token)
+}

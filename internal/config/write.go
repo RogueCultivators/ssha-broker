@@ -57,6 +57,79 @@ func UpsertHosts(path string, hosts []Host) error {
 	return writeDocument(path, doc)
 }
 
+// UpsertGitAccount adds or replaces one git account without touching hosts.
+func UpsertGitAccount(path string, account GitAccount) error {
+	doc, err := readDocument(path)
+	if err != nil {
+		return err
+	}
+	seq, err := gitAccountsSequence(doc)
+	if err != nil {
+		return err
+	}
+	node, err := encodeNode(account)
+	if err != nil {
+		return err
+	}
+	if existing := findHostNode(seq, account.Name); existing != nil {
+		mergeNode(existing, node)
+		return writeDocument(path, doc)
+	}
+	pruned := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	mergeNode(pruned, node)
+	if len(seq.Content) > 0 {
+		pruned.HeadComment = "\n"
+	}
+	seq.Content = append(seq.Content, pruned)
+	return writeDocument(path, doc)
+}
+
+// DeleteGitAccount removes an account by name. A missing account is an error,
+// same as DeleteHost, so the editor can tell the operator the name was wrong.
+func DeleteGitAccount(path, name string) error {
+	doc, err := readDocument(path)
+	if err != nil {
+		return err
+	}
+	seq, err := gitAccountsSequence(doc)
+	if err != nil {
+		return err
+	}
+	for i, n := range seq.Content {
+		if scalarValue(n, "name") == name {
+			seq.Content = append(seq.Content[:i], seq.Content[i+1:]...)
+			return writeDocument(path, doc)
+		}
+	}
+	return fmt.Errorf("git account %q not found in %s", name, path)
+}
+
+func gitAccountsSequence(doc *yaml.Node) (*yaml.Node, error) {
+	root, err := rootMapping(doc)
+	if err != nil {
+		return nil, err
+	}
+	_, gitNode, ok := mapLookup(root, "git")
+	if !ok {
+		key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "git"}
+		gitNode = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		root.Content = append(root.Content, key, gitNode)
+	}
+	if gitNode.Kind != yaml.MappingNode {
+		return nil, errors.New("config: git must be a mapping")
+	}
+	if _, seq, ok := mapLookup(gitNode, "accounts"); ok {
+		if seq.Kind != yaml.SequenceNode {
+			return nil, errors.New("config: git.accounts must be a list")
+		}
+		return seq, nil
+	}
+	key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "accounts"}
+	seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	gitNode.Content = append(gitNode.Content, key, seq)
+	return seq, nil
+}
+
 // DeleteHost removes a host by name.
 func DeleteHost(path, name string) error {
 	doc, err := readDocument(path)

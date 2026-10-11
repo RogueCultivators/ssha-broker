@@ -112,6 +112,8 @@ func (s *Server) routes() {
 	mux.Handle("/api/state", s.auth(http.HandlerFunc(s.handleState)))
 	mux.Handle("/api/hosts", s.auth(http.HandlerFunc(s.handleHosts)))
 	mux.Handle("/api/hosts/", s.auth(http.HandlerFunc(s.handleHost)))
+	mux.Handle("/api/git", s.auth(http.HandlerFunc(s.handleGit)))
+	mux.Handle("/api/git/", s.auth(http.HandlerFunc(s.handleGitAccount)))
 	mux.Handle("/api/secret", s.auth(http.HandlerFunc(s.handleSecret)))
 	mux.Handle("/api/test", s.auth(http.HandlerFunc(s.handleTest)))
 	mux.Handle("/api/hostkey", s.auth(http.HandlerFunc(s.handleHostKey)))
@@ -372,6 +374,7 @@ type statePayload struct {
 	Policy config.Spec       `json:"policy"`
 	Audit  auditSettingsView `json:"audit"`
 	Hosts  []hostView        `json:"hosts"`
+	Git    []gitView         `json:"git"`
 }
 
 // auditSettingsView is the audit configuration with its defaults resolved, so
@@ -399,6 +402,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 			MaxFieldBytes: maxFieldBytes(cfg),
 		},
 	}
+	out.Git = gitViews(cfg)
 	for i := range cfg.Hosts {
 		h := cfg.Hosts[i]
 		spec := cfg.EffectivePolicy(&h)

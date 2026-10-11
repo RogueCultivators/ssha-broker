@@ -47,7 +47,11 @@ func ReadSecretFile(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("sealed secret %s is corrupt", path)
 	}
-	key, err := readSealKey(filepath.Dir(path))
+	keyDir, err := sealKeyDirectory(path)
+	if err != nil {
+		return "", fmt.Errorf("sealed secret %s: %w", path, err)
+	}
+	key, err := readSealKey(keyDir)
 	if err != nil {
 		return "", fmt.Errorf("sealed secret %s: %w", path, err)
 	}
@@ -157,6 +161,23 @@ func fileIsSealed(path string) (bool, error) {
 		return false, err
 	}
 	return string(buf[:n]) == secretPrefix, nil
+}
+
+// sealKeyDirectory finds the key for a secret file. Git account secrets live
+// in secrets/git/, one level under the key, so a missing key beside the file
+// falls back to the parent. It does not walk further than that.
+func sealKeyDirectory(path string) (string, error) {
+	dir := filepath.Dir(path)
+	if _, err := os.Stat(filepath.Join(dir, sealKeyName)); err == nil {
+		return dir, nil
+	}
+	parent := filepath.Dir(dir)
+	if parent != dir {
+		if _, err := os.Stat(filepath.Join(parent, sealKeyName)); err == nil {
+			return parent, nil
+		}
+	}
+	return "", errors.New("seal key is missing")
 }
 
 func readSealKey(dir string) ([]byte, error) {

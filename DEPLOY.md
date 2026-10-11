@@ -79,6 +79,7 @@ make package-macos    # 只在 macOS 上有意义
 |---|---|
 | 配置 | `~/.config/ssha/config.yaml`（系统级装在 `/etc/ssha/config.yaml`） |
 | 密码 | 配置旁边的 `secrets/<主机名>.password`，0600，加密保存 |
+| Git 密码 / 口令 | `secrets/git/<账号>.password` 或 `.passphrase`，0600，加密保存 |
 | 管理密码 | `secrets/ui-auth.json`，只锁配置界面 |
 | 审计日志 | `~/.local/share/ssha/audit.jsonl`（或配置里 `audit.path`） |
 
