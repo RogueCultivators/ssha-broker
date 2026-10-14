@@ -85,6 +85,17 @@ type App struct {
 
 // Run is the CLI entry point. It returns the process exit code.
 func Run(args []string, version string) int {
+	return run(args, version, os.Stdout, os.Stderr)
+}
+
+// RunStreams is Run with explicit output writers. The Windows window build is a
+// GUI process: it has no console, so it captures stderr to show a dialog rather
+// than exiting without a word.
+func RunStreams(args []string, version string, stdout, stderr io.Writer) int {
+	return run(args, version, stdout, stderr)
+}
+
+func run(args []string, version string, stdout, stderr io.Writer) int {
 	// Git invokes these before it has a chance to be a subcommand. Their
 	// arguments look like flags (`ssh -o ...`), so they must not go through
 	// flag parsing.
@@ -99,7 +110,7 @@ func Run(args []string, version string) int {
 		}
 	}
 
-	a := &App{Version: version, Stdout: os.Stdout, Stderr: os.Stderr}
+	a := &App{Version: version, Stdout: stdout, Stderr: stderr}
 
 	global := flag.NewFlagSet("ssha", flag.ContinueOnError)
 	global.SetOutput(io.Discard)

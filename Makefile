@@ -57,7 +57,8 @@ package-windows:
 		-o cmd/ssha/rsrc_windows_amd64.syso
 	$(WIN_CGO) go build -tags desktop -trimpath -ldflags "$(LDFLAGS)" \
 		-o dist/ssha.exe ./cmd/ssha
-	$(WIN_CGO) go build -tags desktop -trimpath -ldflags "$(LDFLAGS) -H=windowsgui" \
+	$(WIN_CGO) go build -tags desktop -trimpath \
+		-ldflags "$(LDFLAGS) -H=windowsgui -X main.windowBuild=1 -X main.defaultCommand=ui" \
 		-o dist/ssha-ui.exe ./cmd/ssha
 	cp packaging/windows/install.ps1 packaging/windows/uninstall.ps1 \
 		packaging/windows/README-Windows.txt dist/

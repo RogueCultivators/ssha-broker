@@ -136,7 +136,7 @@ jobs:
             -ldflags "-s -w -X main.version=$env:VERSION" `
             -o dist/ssha.exe ./cmd/ssha
           go build -tags desktop -trimpath `
-            -ldflags "-s -w -H=windowsgui -X main.version=$env:VERSION" `
+            -ldflags "-s -w -H=windowsgui -X main.version=$env:VERSION -X main.windowBuild=1 -X main.defaultCommand=ui" `
             -o dist/ssha-ui.exe ./cmd/ssha
       - name: package
         # The exe plus the PowerShell installer and its uninstaller. Webview's
