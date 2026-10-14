@@ -596,6 +596,7 @@ func (s *Server) handleHostKey(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Addr string `json:"addr"`
 		Port int    `json:"port"`
+		User string `json:"user"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -608,9 +609,12 @@ func (s *Server) handleHostKey(w http.ResponseWriter, r *http.Request) {
 	if in.Port == 0 {
 		in.Port = 22
 	}
+	// Scan as the account the operator configured, not as an invented name.
+	// sshd logs an unknown name as "Invalid user", which fail2ban counts.
+	target := sshx.Target{Addr: net.JoinHostPort(in.Addr, strconv.Itoa(in.Port)), User: in.User}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	keys, err := sshx.ScanHostKeys(ctx, net.JoinHostPort(in.Addr, strconv.Itoa(in.Port)), 10*time.Second)
+	keys, err := sshx.ScanHostKeys(ctx, target, 10*time.Second)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return

@@ -313,6 +313,10 @@ ssha host-key prod-web             # 也可以直接传配置里的 host 名
 攻击或服务器重建的典型信号，应该人工核对，而不是自动覆盖。也可以不用 known_hosts，直接在配置里
 钉指纹：`host_key: {fingerprints: ["SHA256:xxxx"]}`。扫描完用 `ssha hosts test <name>` 验证。
 
+扫描以配置里的用户和公钥去连，不编造账号，也不试密码。旧版本用 `ssha-host-key-scan` 这个不存在的
+用户探测，sshd 会记 `Invalid user`，几次就够 fail2ban 把你的出口 IP 一起封掉；现在只会留下正常的
+`Accepted publickey`。传的是地址而不是配置里的主机名时，扫描直接匿名读走密钥，连用户名都不发。
+
 #### 情况 A：有私钥、允许免密登录
 
 ```yaml

@@ -342,13 +342,17 @@ func (a *App) cmdHostKey(args []string) int {
 	}
 	spec := rest[0]
 
-	// A configured host name supplies the address and the known_hosts location.
+	// A configured host name supplies the address, the user, the credentials
+	// and the known_hosts location. Scanning as that account is what keeps sshd
+	// from logging an invented username, which fail2ban treats as an attack.
 	addr := ""
 	khPath := ""
+	target := sshx.Target{}
 	if b, err := a.open(); err == nil {
 		if h, err := b.Config().Host(spec); err == nil {
 			addr = h.AddrPort()
 			khPath = h.HostKey.KnownHosts
+			target = sshx.Target{Name: h.Name, Addr: addr, User: h.User, Auth: h.Auth}
 		}
 		b.Close()
 	}
@@ -363,6 +367,7 @@ func (a *App) cmdHostKey(args []string) int {
 		}
 		addr = net.JoinHostPort(host, strconv.Itoa(p))
 	}
+	target.Addr = addr
 	if *knownHosts != "" {
 		khPath = *knownHosts
 	}
@@ -373,7 +378,7 @@ func (a *App) cmdHostKey(args []string) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout+2*time.Second)
 	defer cancel()
-	keys, err := sshx.ScanHostKeys(ctx, addr, *timeout)
+	keys, err := sshx.ScanHostKeys(ctx, target, *timeout)
 	if err != nil {
 		return a.fail(fmt.Errorf("scan %s: %w", addr, err))
 	}

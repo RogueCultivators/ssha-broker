@@ -1359,7 +1359,7 @@ $("scan").addEventListener("click", async () => {
   if (!addr) { showResult("先填地址", true); return; }
   $("scan-out").textContent = "扫描中…";
   try {
-    const r = await api("/api/hostkey", { method: "POST", body: JSON.stringify({ addr, port }) });
+    const r = await api("/api/hostkey", { method: "POST", body: JSON.stringify({ addr, port, user: $("f-user").value.trim() }) });
     $("scan-out").textContent = r.keys.map((k) => `${k.type.padEnd(22)} ${k.fingerprint}`).join("\n")
       + "\n\nknown_hosts 行：\n" + r.keys.map((k) => "  " + k.line).join("\n");
     $("f-fingerprints").value = r.keys.map((k) => k.fingerprint).join("\n");
