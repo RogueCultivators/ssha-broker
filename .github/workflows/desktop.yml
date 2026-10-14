@@ -128,19 +128,29 @@ jobs:
       - name: build
         env:
           CGO_ENABLED: "1"
+          VERSION: ${{ needs.version.outputs.version }}
+        # Two binaries: the console one for the CLI and MCP, and a window-subsystem
+        # one so double-click and autostart do not open a console as well.
         run: |
           go build -tags desktop -trimpath `
-            -ldflags "-s -w -X main.version=${{ needs.version.outputs.version }}" `
+            -ldflags "-s -w -X main.version=$env:VERSION" `
             -o dist/ssha.exe ./cmd/ssha
+          go build -tags desktop -trimpath `
+            -ldflags "-s -w -H=windowsgui -X main.version=$env:VERSION" `
+            -o dist/ssha-ui.exe ./cmd/ssha
       - name: package
-        # One file: webview's built-in WebView2 loader looks for the runtime that
-        # ships with Windows 10 and later on its own, so no WebView2Loader.dll
-        # has to travel next to the exe.
+        # The exe plus the PowerShell installer and its uninstaller. Webview's
+        # built-in WebView2 loader looks for the runtime that ships with Windows
+        # 10 and later on its own, so no WebView2Loader.dll travels next to it.
         run: |
           $v = '${{ needs.version.outputs.version }}'
-          Compress-Archive -Path dist/ssha.exe -DestinationPath "dist/ssha-$v-windows-x64.zip"
+          Copy-Item packaging/windows/install.ps1, packaging/windows/uninstall.ps1, packaging/windows/README-Windows.txt dist/
+          Compress-Archive -Path dist/ssha.exe, dist/ssha-ui.exe, dist/install.ps1, dist/uninstall.ps1, dist/README-Windows.txt `
+            -DestinationPath "dist/ssha-$v-windows-x64.zip"
       - name: smoke test
-        run: dist\ssha.exe version
+        run: |
+          dist\ssha.exe version
+          if (-not (Test-Path dist\ssha-ui.exe)) { throw "ssha-ui.exe is missing" }
       - uses: actions/upload-artifact@v7
         with:
           name: windows-package

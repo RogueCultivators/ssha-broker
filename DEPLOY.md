@@ -19,7 +19,10 @@ ssha 有一个桌面应用（配置编辑器）和一个命令行 / MCP 服务�
 
 - **Debian / Ubuntu**：`sudo apt install ./ssha_<版本>_amd64.deb` —— 装完应用菜单里就有 ssha
 - **任意 Linux**：`chmod +x ssha-<版本>-x86_64.AppImage && ./ssha-<版本>-x86_64.AppImage`
-- **Windows**：解压 zip 得到 `ssha.exe`，双击。**只有一个文件**，不用带任何 DLL
+- **Windows**：解压 zip，然后在 PowerShell 里跑
+  `powershell -ExecutionPolicy Bypass -File .\install.ps1`（不用管理员）。装到用户目录、加进 PATH、
+  建开始菜单和桌面快捷方式、生成起始配置，并默认设置登录时自启动。包里是 `ssha.exe`（命令行 + MCP）
+  和 `ssha-ui.exe`（窗口版，双击和自启动都不弹控制台），加 `uninstall.ps1`。
 - **macOS**：解压 zip 得到 `ssha.app`，拖进「应用程序」
 
 > AppImage 和 deb **不带浏览器引擎**——窗口用的是系统自带的 WebKitGTK。
@@ -28,9 +31,9 @@ ssha 有一个桌面应用（配置编辑器）和一个命令行 / MCP 服务�
 > Windows 侧需要 WebView2 运行时，Windows 10/11 自带；ssha 会自己去找到它，
 > 所以发行包里没有 `WebView2Loader.dll` 这个文件。
 >
-> 一个已知的取舍：`ssha.exe` 是**控制台子系统**的，双击会同时开一个黑窗口。
-> 这样 `ssha run` / `ssha mcp` 在终端里才有输出——它首先是个命令行工具。
-> 如果你更想要纯粹的双击体验，说一声，改成窗口子系统是几分钟的事。
+> Windows 包里有两个 exe：`ssha.exe` 是**控制台子系统**，`ssha run` / `ssha mcp`
+> 在终端里才有输出，双击会附带一个黑窗口；`ssha-ui.exe` 是**窗口子系统**，只开配置窗口。
+> 安装脚本建的快捷方式和自启动都指向后者。
 
 ### 用脚本从源码装
 

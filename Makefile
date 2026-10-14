@@ -40,6 +40,14 @@ package-macos: desktop
 # Cross compiles the Windows build. WebView2.h includes "EventToken.h" with a
 # capital E, which is fine on Windows and not fine on a case-sensitive
 # filesystem, so a one-line shim goes on the include path.
+#
+# Two binaries come out of it: ssha.exe (console: CLI and MCP) and ssha-ui.exe
+# (window subsystem: the editor, with no console window). The installer, the
+# Start Menu shortcut and the autostart entry all use the window one.
+WIN_CGO := CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
+	CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
+	CGO_CFLAGS=-I$(CURDIR)/.win-shim CGO_CXXFLAGS=-I$(CURDIR)/.win-shim
+
 package-windows:
 	mkdir -p dist .win-shim
 	printf '#include <eventtoken.h>\n' > .win-shim/EventToken.h
@@ -47,11 +55,14 @@ package-windows:
 		-icon packaging/icons/ssha.ico -out packaging/windows/ssha.rc
 	x86_64-w64-mingw32-windres -i packaging/windows/ssha.rc \
 		-o cmd/ssha/rsrc_windows_amd64.syso
-	CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
-		CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
-		CGO_CFLAGS=-I$(CURDIR)/.win-shim CGO_CXXFLAGS=-I$(CURDIR)/.win-shim \
-		go build -tags desktop -trimpath -ldflags "$(LDFLAGS)" -o dist/ssha.exe ./cmd/ssha
-	cd dist && zip -q ssha-$(VERSION_NUM)-windows-x64.zip ssha.exe
+	$(WIN_CGO) go build -tags desktop -trimpath -ldflags "$(LDFLAGS)" \
+		-o dist/ssha.exe ./cmd/ssha
+	$(WIN_CGO) go build -tags desktop -trimpath -ldflags "$(LDFLAGS) -H=windowsgui" \
+		-o dist/ssha-ui.exe ./cmd/ssha
+	cp packaging/windows/install.ps1 packaging/windows/uninstall.ps1 \
+		packaging/windows/README-Windows.txt dist/
+	cd dist && zip -q ssha-$(VERSION_NUM)-windows-x64.zip \
+		ssha.exe ssha-ui.exe install.ps1 uninstall.ps1 README-Windows.txt
 	@echo "dist/ssha-$(VERSION_NUM)-windows-x64.zip"
 
 # Needs root: a system-wide copy plus the dedicated-user service.
