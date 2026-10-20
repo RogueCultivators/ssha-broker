@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 )
 
@@ -27,9 +29,11 @@ type GitConfig struct {
 
 // GitAccount is one credential for a set of git hosts.
 //
-// A host is a hostname such as github.com, not a repository URL. SSH and HTTPS
-// are both expressed here so the agent does not have to know which one a push
-// needs, and never sees the key or the password.
+// A host is a hostname such as github.com, optionally with a port for a
+// self-hosted server (git.example.com:14444); it is not a repository URL. A host
+// without a port matches any port, one with a port matches only that port. SSH
+// and HTTPS are both expressed here so the agent does not have to know which one
+// a push needs, and never sees the key or the password.
 type GitAccount struct {
 	Name        string    `yaml:"name" json:"name"`
 	Description string    `yaml:"description,omitempty" json:"description,omitempty"`
@@ -189,8 +193,10 @@ func knownGitOp(op string) bool {
 	}
 }
 
-// NormalizeGitHost accepts a hostname and rejects a URL or a path. Operators
-// paste full clone URLs into the host field; the error tells them what to keep.
+// NormalizeGitHost accepts "host" or "host:port" and rejects a URL or a path.
+// Operators paste full clone URLs into the host field; the error tells them what
+// to keep. A port is kept so a self-hosted server on a non-standard port, such
+// as git.example.com:14444, is expressible and matches only that port.
 func NormalizeGitHost(h string) (string, error) {
 	h = strings.TrimSpace(h)
 	lower := strings.ToLower(h)
@@ -200,56 +206,124 @@ func NormalizeGitHost(h string) (string, error) {
 		}
 	}
 	h = strings.Trim(h, "/")
-	if h == "" || strings.ContainsAny(h, " /@") || strings.Contains(h, ":") {
+	host, port, err := splitGitHostPort(h)
+	if err != nil || host == "" || strings.ContainsAny(host, " /@") || strings.ContainsAny(host, "[]") {
 		return "", fmt.Errorf("host %q is not a hostname", h)
 	}
-	return strings.ToLower(h), nil
+	host = strings.ToLower(host)
+	if port != "" {
+		return net.JoinHostPort(host, port), nil
+	}
+	return host, nil
 }
 
-// MatchGit finds the account for a remote host and repository path.
+// splitGitHostPort splits "host", "host:port" or "[v6]:port". A bare IPv6
+// address is refused: without brackets the port is ambiguous.
+func splitGitHostPort(h string) (host, port string, err error) {
+	if h == "" {
+		return "", "", fmt.Errorf("empty host")
+	}
+	if !strings.Contains(h, ":") {
+		if strings.ContainsAny(h, "[]") {
+			return "", "", fmt.Errorf("brackets without a port")
+		}
+		return h, "", nil
+	}
+	host, port, err = net.SplitHostPort(h)
+	if err != nil {
+		return "", "", err
+	}
+	if host == "" || port == "" {
+		return "", "", fmt.Errorf("empty host or port")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return "", "", fmt.Errorf("invalid port %q", port)
+	}
+	return host, strconv.Itoa(n), nil
+}
+
+// parseGitHost is the lenient form used during matching. Hosts are normalized
+// when the config loads, so a value that does not parse is simply skipped.
+func parseGitHost(h string) (host, port string, ok bool) {
+	host, port, err := splitGitHostPort(strings.TrimSpace(h))
+	if err != nil {
+		return "", "", false
+	}
+	return strings.ToLower(host), port, true
+}
+
+// MatchGit finds the account for a remote host, port and repository path.
 //
-// A longer path_prefix wins, so one account can cover github.com while another
-// covers github.com/myorg. Two accounts that match equally are an error: picking
-// one silently would authenticate with the wrong key.
-func (c *Config) MatchGit(host, path string) (*GitAccount, error) {
+// A host entry without a port matches any port; an entry with a port matches
+// only that port. A longer path_prefix wins, and between equal prefixes the
+// account that names the port wins over one that matches every port. Two
+// accounts that match equally are an error: picking one silently would
+// authenticate with the wrong key.
+func (c *Config) MatchGit(host, port, path string) (*GitAccount, error) {
 	host = strings.ToLower(strings.TrimSpace(host))
+	port = strings.TrimSpace(port)
 	path = strings.Trim(path, "/")
 	var best *GitAccount
 	bestLen := -1
+	bestSpecific := false
 	var tied []string
 	for i := range c.Git.Accounts {
 		a := &c.Git.Accounts[i]
-		if a.Disabled || !a.matchesHost(host) {
+		if a.Disabled {
+			continue
+		}
+		matched, specific := a.matchHost(host, port)
+		if !matched {
 			continue
 		}
 		if a.PathPrefix != "" && path != a.PathPrefix && !strings.HasPrefix(path, a.PathPrefix+"/") {
 			continue
 		}
 		n := len(a.PathPrefix)
-		if n > bestLen {
+		switch {
+		case n > bestLen, n == bestLen && specific && !bestSpecific:
 			best = a
 			bestLen = n
+			bestSpecific = specific
 			tied = []string{a.Name}
-			continue
-		}
-		if n == bestLen {
+		case n == bestLen && specific == bestSpecific:
 			tied = append(tied, a.Name)
 		}
 	}
 	if best == nil {
-		return nil, fmt.Errorf("no git account matches %s", host)
+		return nil, fmt.Errorf("no git account matches %s", displayHost(host, port))
 	}
 	if len(tied) > 1 {
-		return nil, fmt.Errorf("git remote %s matches more than one account (%s)", host, strings.Join(tied, ", "))
+		return nil, fmt.Errorf("git remote %s matches more than one account (%s)", displayHost(host, port), strings.Join(tied, ", "))
 	}
 	return best, nil
 }
 
-func (a GitAccount) matchesHost(host string) bool {
+// matchHost reports whether the account covers host:port, and whether it did so
+// by naming the port explicitly.
+func (a GitAccount) matchHost(host, port string) (matched, specific bool) {
 	for _, h := range a.Hosts {
-		if strings.EqualFold(h, host) {
-			return true
+		eh, ep, ok := parseGitHost(h)
+		if !ok || eh != host {
+			continue
+		}
+		if ep == "" {
+			matched = true
+			continue
+		}
+		if ep == port {
+			return true, true
 		}
 	}
-	return false
+	return matched, false
+}
+
+// displayHost omits a default port so an error stays readable.
+func displayHost(host, port string) string {
+	switch port {
+	case "", "22", "80", "443", "9418":
+		return host
+	}
+	return net.JoinHostPort(host, port)
 }

@@ -110,7 +110,7 @@ func (a *App) cmdGitWhich(args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	account, err := b.Config().MatchGit(remote.Host, remote.Path)
+	account, err := b.Config().MatchGit(remote.Host, remote.EffectivePort(), remote.Path)
 	if err != nil {
 		return a.fail(err)
 	}

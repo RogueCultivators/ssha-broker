@@ -153,7 +153,7 @@ hosts:
 # git:
 #   accounts:
 #     - name: github
-#       hosts: [github.com]                 # 主机名，不是 clone 地址
+#       hosts: [github.com]                 # 主机名，不是 clone 地址；自建可写 host:14444
 #       auth:
 #         type: ssh
 #         key_path: ~/.ssh/id_ed25519

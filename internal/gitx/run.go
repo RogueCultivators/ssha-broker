@@ -114,7 +114,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	account, err := r.Config.MatchGit(remote.Host, remote.Path)
+	account, err := r.Config.MatchGit(remote.Host, remote.EffectivePort(), remote.Path)
 	if err != nil {
 		res := denied("", op, commandLine(op, req.Args), remote.Sanitized(), err.Error())
 		res.Host = remote.Host

@@ -103,6 +103,26 @@ func (r Remote) Transport() string {
 	return "https"
 }
 
+// EffectivePort is the port the remote actually connects to, with the scheme
+// default filled in. Account matching needs it: a remote written without a port
+// still uses 22 over ssh, so an account that names "host:22" should match it.
+func (r Remote) EffectivePort() string {
+	if r.Port != "" {
+		return r.Port
+	}
+	switch r.Scheme {
+	case "ssh":
+		return "22"
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	case "git":
+		return "9418"
+	}
+	return ""
+}
+
 // Sanitized is the remote with userinfo removed, safe to log and to show an agent.
 func (r Remote) Sanitized() string {
 	if r.Raw != "" && !strings.Contains(r.Raw, "://") {

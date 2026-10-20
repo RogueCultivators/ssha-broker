@@ -44,6 +44,37 @@ func TestParseRemote(t *testing.T) {
 	}
 }
 
+func TestRemoteEffectivePort(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"git@github.com:acme/app.git", "22"},
+		{"ssh://git@github.com:14444/acme/app.git", "14444"},
+		{"https://github.com/acme/app.git", "443"},
+		{"https://git.example.com:8443/acme/app.git", "8443"},
+	}
+	for _, tc := range cases {
+		r, err := ParseRemote(tc.in)
+		if err != nil {
+			t.Fatalf("ParseRemote(%q): %v", tc.in, err)
+		}
+		if got := r.EffectivePort(); got != tc.want {
+			t.Errorf("EffectivePort(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestRewrittenKeepsNonStandardPort(t *testing.T) {
+	r, err := ParseRemote("ssh://git@git.example.com:14444/acme/app.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := r.Rewritten("ssh", "git"), "ssh://git@git.example.com:14444/acme/app.git"; got != want {
+		t.Errorf("Rewritten = %q, want %q", got, want)
+	}
+	if got, want := r.Rewritten("https", ""), "https://git.example.com:14444/acme/app.git"; got != want {
+		t.Errorf("Rewritten https = %q, want %q", got, want)
+	}
+}
+
 func TestCredentialRejectsOtherHost(t *testing.T) {
 	g := Grant{Auth: "https", Host: "github.com", Path: "acme/app.git", Username: "octo", Secret: "s3cret-token"}
 	out, err := Credential("get", strings.NewReader("protocol=https\nhost=gitlab.com\n\n"), g)

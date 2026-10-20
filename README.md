@@ -417,7 +417,7 @@ legacy-db   FAIL    password  -    -                                          47
 git:
   accounts:
     - name: github
-      hosts: [github.com]
+      hosts: [github.com]              # 主机名；自建 Git 写成 git.example.com:14444
       auth:
         type: ssh
         key_path: ~/.ssh/id_ed25519
@@ -431,6 +431,10 @@ git:
       policy:
         allow_force: false       # 默认就是 false，模型加 --force 会被拒绝
 ```
+
+`hosts` 里不带端口就匹配该主机的所有端口；带端口（如 `git.example.com:14444`）只匹配那一个端口，
+同一台机器上不同端口的服务可以分成不同账号。远端写成 `ssh://git@host:14444/org/repo.git`，
+端口会原样用上。
 
 界面里输入的密码和私钥口令会加密写到 `secrets/git/`。自己写的 `password_file`
 保持明文，ssha 不改它。命令行和 MCP 读取时自动解密，没有解锁命令。
