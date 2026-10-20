@@ -63,6 +63,8 @@ expected = {
     "ssh_download",
     "ssh_policy_check",
     "ssh_audit",
+    "git_accounts",
+    "git",
 }
 assert set(names) == expected, names
 assert allowed["structuredContent"]["exit_code"] == 0, allowed

@@ -631,14 +631,24 @@ code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$UI_PORT/api/sta
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-SSHA-Token: wrong" "http://127.0.0.1:$UI_PORT/api/state")
 [ "$code" = "401" ] && pass "the api refuses a wrong token" || fail "the api returned $code for a wrong token"
 
-out=$(curl -s -H "X-SSHA-Token: $TOKEN" "http://127.0.0.1:$UI_PORT/api/state")
+# The editor is locked until a management password exists, and the token alone
+# does not unlock it. This is the same first-run setup the window shows.
+TOKEN_HDR=(-H "X-SSHA-Token: ${TOKEN}")
+SESSION=$(curl -s "${TOKEN_HDR[@]}" -H 'Content-Type: application/json' \
+  -X POST "http://127.0.0.1:$UI_PORT/api/session" \
+  -d '{"password":"e2e-admin-password","confirm":"e2e-admin-password"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("session",""))')
+[ -n "$SESSION" ] && pass "the editor sets a management password" || fail "no session from /api/session: $(cat "$WORK/ui.log")"
+AUTH=("${TOKEN_HDR[@]}" -H "X-SSHA-Session: ${SESSION}")
+
+out=$(curl -s "${AUTH[@]}" "http://127.0.0.1:$UI_PORT/api/state")
 contains "state lists the hosts" '"prod-web"' "$out"
 contains "state reports the effective policy" '"effective_mode"' "$out"
 
 # Creating a host from the editor: the file must survive with its comments.
 before_comments=$(grep -c '^[[:space:]]*#' "$WORK/ui.yaml")
 [ "$before_comments" -gt 50 ] && pass "the template starts with $before_comments commented lines" || fail "only $before_comments comments to start with"
-out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' -X POST "http://127.0.0.1:$UI_PORT/api/hosts" -d '{
+out=$(curl -s "${AUTH[@]}" -H 'Content-Type: application/json' -X POST "http://127.0.0.1:$UI_PORT/api/hosts" -d '{
   "name": "ui-made",
   "addr": "10.9.9.9",
   "user": "deploy",
@@ -655,7 +665,7 @@ contains "an untouched host kept its nested comments" "# 加密私钥的口令�
 if grep -qP '[ \t]+$' "$WORK/ui.yaml"; then fail "the editor left trailing whitespace"; else pass "no trailing whitespace was left behind"; fi
 
 # Editing an existing host must not drop the fields the editor did not send.
-out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' -X POST "http://127.0.0.1:$UI_PORT/api/hosts" -d '{"name":"prod-web","addr":"10.0.0.10","user":"deploy","description":"edited","auth":{"type":"key","key_path":"~/.ssh/id_ed25519"},"policy":{"mode":"allow"}}')
+out=$(curl -s "${AUTH[@]}" -H 'Content-Type: application/json' -X POST "http://127.0.0.1:$UI_PORT/api/hosts" -d '{"name":"prod-web","addr":"10.0.0.10","user":"deploy","description":"edited","auth":{"type":"key","key_path":"~/.ssh/id_ed25519"},"policy":{"mode":"allow"}}')
 contains "an existing host can be edited" "prod-web" "$out"
 out=$("$BIN" -c "$WORK/ui.yaml" hosts show prod-web --json)
 contains "the edit took effect" "edited" "$out"
@@ -664,49 +674,49 @@ out=$("$BIN" -c "$WORK/ui.yaml" hosts find ui-made)
 contains "a host created by the editor is searchable by its note" "ui-made" "$out"
 
 # 接入 agent：装 skill、拿 MCP 配置
-out=$(curl -s -H "X-SSHA-Token: $TOKEN" "http://127.0.0.1:$UI_PORT/api/skill")
+out=$(curl -s "${AUTH[@]}" "http://127.0.0.1:$UI_PORT/api/skill")
 contains "the skill api names the skill" '"ssha-agent"' "$out"
 contains "it offers install locations" '"targets"' "$out"
 contains "it offers an mcp snippet" 'mcpServers' "$out"
 contains "the snippet uses an absolute binary path" "$BIN" "$out"
 
 SKILLDIR="$WORK/home/.agents/skills"
-out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' \
+out=$(curl -s "${AUTH[@]}" -H 'Content-Type: application/json' \
   -X POST "http://127.0.0.1:$UI_PORT/api/skill/install" -d "{\"dir\":\"$SKILLDIR\"}")
 check "installing the skill" 0 $?
 contains "installation reports the path" "$SKILLDIR/ssha-agent/SKILL.md" "$out"
 [ -f "$SKILLDIR/ssha-agent/SKILL.md" ] && pass "SKILL.md was written" || fail "SKILL.md missing"
 contains "the installed skill has frontmatter" "name: ssh-agent" "$(cat "$SKILLDIR/ssha-agent/SKILL.md")"
-out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' \
+out=$(curl -s "${AUTH[@]}" -H 'Content-Type: application/json' \
   -X POST "http://127.0.0.1:$UI_PORT/api/skill/install" -d "{\"dir\":\"$SKILLDIR\"}")
 contains "installing again is an update, not an error" '"existed":true' "$out"
-out=$(curl -s -H "X-SSHA-Token: $TOKEN" "http://127.0.0.1:$UI_PORT/api/skill" \
+out=$(curl -s "${AUTH[@]}" "http://127.0.0.1:$UI_PORT/api/skill" \
   | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["targets"][0]))')
 contains "the target now reports as installed" '"exists": true' "$out"
 contains "and as up to date" '"up_to_date": true' "$out"
 
-out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' \
+out=$(curl -s "${AUTH[@]}" -H 'Content-Type: application/json' \
   -X POST "http://127.0.0.1:$UI_PORT/api/skill/install" -d '{"dir":"/tmp/../etc"}')
 contains "a .. path component is refused" ".." "$out"
 if [ -f /etc/ssha-agent/SKILL.md ]; then fail "the editor wrote outside its directory"; else pass "nothing was written outside the directory"; fi
 
-curl -s -D "$WORK/skill-headers" -o "$WORK/SKILL.md" -H "X-SSHA-Token: $TOKEN" \
+curl -s -D "$WORK/skill-headers" -o "$WORK/SKILL.md" "${AUTH[@]}" \
   "http://127.0.0.1:$UI_PORT/api/skill/download"
 contains "the download is served as markdown" "text/markdown" "$(cat "$WORK/skill-headers")"
 contains "the download is an attachment" "attachment" "$(cat "$WORK/skill-headers")"
 contains "the download is the real skill" "name: ssh-agent" "$(cat "$WORK/SKILL.md")"
 
 # The rejected edit must not corrupt the file.
-out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' -X POST "http://127.0.0.1:$UI_PORT/api/hosts" -d '{"name":"broken","auth":{"type":"key"}}')
+out=$(curl -s "${AUTH[@]}" -H 'Content-Type: application/json' -X POST "http://127.0.0.1:$UI_PORT/api/hosts" -d '{"name":"broken","auth":{"type":"key"}}')
 contains "an invalid host is rejected" "error" "$out"
 if grep -q "name: broken" "$WORK/ui.yaml"; then fail "the rejected host was written anyway"; else pass "the rejected host was not written"; fi
 
-out=$(curl -s -H "X-SSHA-Token: $TOKEN" "http://127.0.0.1:$UI_PORT/api/audit?limit=5")
+out=$(curl -s "${AUTH[@]}" "http://127.0.0.1:$UI_PORT/api/audit?limit=5")
 contains "the audit panel has data" '"records"' "$out"
 
 # Typing a password in the editor stores it beside the config, never in it.
 pwfile="$WORK/secrets/ui-made.password"
-out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' \
+out=$(curl -s "${AUTH[@]}" -H 'Content-Type: application/json' \
   -X POST "http://127.0.0.1:$UI_PORT/api/secret" -d '{"host":"ui-made","kind":"password","value":"e2e-secret-pw"}')
 check "the editor stores a password" 0 $?
 contains "storing reports where it went" "password" "$out"
@@ -716,14 +726,14 @@ mode=$(stat -c '%a' "$pwfile" 2>/dev/null)
 contains "the config references the secret" "password_file" "$(cat "$WORK/ui.yaml")"
 if grep -q "e2e-secret-pw" "$WORK/ui.yaml"; then fail "the password was written into the config"; else pass "the password is not in the config"; fi
 
-out=$(curl -s -H "X-SSHA-Token: $TOKEN" "http://127.0.0.1:$UI_PORT/api/state")
+out=$(curl -s "${AUTH[@]}" "http://127.0.0.1:$UI_PORT/api/state")
 ready=$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(h["password_ready"] for h in d["hosts"] if h["name"]=="ui-made"))' <<<"$out")
 [ "$ready" = "True" ] && pass "the state reports the password as ready" || fail "password_ready is $ready"
 if printf '%s' "$out" | grep -q "e2e-secret-pw"; then fail "the password leaked into the state"; else pass "the password never appears in a response"; fi
 contains "the state says where secrets live" "secrets_dir" "$out"
 
 # Clearing removes the file and the reference together.
-curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' \
+curl -s "${AUTH[@]}" -H 'Content-Type: application/json' \
   -X POST "http://127.0.0.1:$UI_PORT/api/secret" -d '{"host":"ui-made","kind":"password","value":""}' >/dev/null
 if [ -f "$pwfile" ]; then fail "clearing did not delete the secret file"; else pass "clearing deletes the secret file"; fi
 if python3 - "$WORK/ui.yaml" <<'PY'
@@ -737,7 +747,7 @@ then pass "clearing removes the reference"; else fail "clearing left the referen
 # The whole point: a password typed into the editor is one the broker actually
 # uses. Create a host for the test container, store the real password through the
 # API, and connect.
-out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' -X POST "http://127.0.0.1:$UI_PORT/api/hosts" -d "{
+out=$(curl -s "${AUTH[@]}" -H 'Content-Type: application/json' -X POST "http://127.0.0.1:$UI_PORT/api/hosts" -d "{
   \"name\": \"ui-pw\",
   \"addr\": \"127.0.0.1\",
   \"port\": $PORT,
@@ -746,19 +756,19 @@ out=$(curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' -X P
   \"auth\": {\"type\": \"password\"},
   \"host_key\": {\"known_hosts\": \"$WORK/known_hosts\"}
 }"); check "a password host can be created" 0 $?
-curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' \
+curl -s "${AUTH[@]}" -H 'Content-Type: application/json' \
   -X POST "http://127.0.0.1:$UI_PORT/api/secret" -d '{"host":"ui-pw","kind":"password","value":"e2e-secret"}' >/dev/null
 out=$("$BIN" -c "$WORK/ui.yaml" run ui-pw -- uname -s 2>&1); check "a password typed in the editor really connects" 0 $?
 contains "and returns output" "Linux" "$out"
 
 # A wrong password must fail, or the check above proves nothing.
-curl -s -H "X-SSHA-Token: $TOKEN" -H 'Content-Type: application/json' \
+curl -s "${AUTH[@]}" -H 'Content-Type: application/json' \
   -X POST "http://127.0.0.1:$UI_PORT/api/secret" -d '{"host":"ui-pw","kind":"password","value":"wrong"}' >/dev/null
 out=$("$BIN" -c "$WORK/ui.yaml" run ui-pw -- uname -s 2>&1); code=$?
 check "a wrong stored password fails" 1 "$code"
 contains "with an explanation" "password is probably wrong" "$out"
 
-curl -s -H "X-SSHA-Token: $TOKEN" -X DELETE "http://127.0.0.1:$UI_PORT/api/hosts/ui-made" >/dev/null
+curl -s "${AUTH[@]}" -X DELETE "http://127.0.0.1:$UI_PORT/api/hosts/ui-made" >/dev/null
 if grep -q "name: ui-made" "$WORK/ui.yaml"; then fail "delete did not remove the host"; else pass "the editor deletes a host"; fi
 
 kill $UI_PID 2>/dev/null
@@ -785,7 +795,14 @@ UI3=$!
 for _ in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$PERSIST_PORT/" && break; sleep 0.25; done
 second_token=$(cat "$TF")
 [ "$first_token" = "$second_token" ] && pass "a persisted token survives a restart" || fail "the token changed: $first_token -> $second_token"
-code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-SSHA-Token: $first_token" "http://127.0.0.1:$PERSIST_PORT/api/state")
+# Sessions live in memory, so a restart needs the management password again;
+# the token only gets you as far as /api/session.
+PERSIST_SESSION=$(curl -s -H "X-SSHA-Token: $first_token" -H 'Content-Type: application/json' \
+  -X POST "http://127.0.0.1:$PERSIST_PORT/api/session" \
+  -d '{"password":"e2e-admin-password"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("session",""))')
+[ -n "$PERSIST_SESSION" ] && pass "the editor unlocks after a restart" || fail "no session after the restart"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-SSHA-Token: $first_token" -H "X-SSHA-Session: $PERSIST_SESSION" "http://127.0.0.1:$PERSIST_PORT/api/state")
 [ "$code" = "200" ] && pass "the bookmarked token still works after the restart" || fail "the old token returned $code"
 kill $UI3 2>/dev/null; wait $UI3 2>/dev/null
 
