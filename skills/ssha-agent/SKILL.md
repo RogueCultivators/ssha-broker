@@ -87,6 +87,53 @@ or denied, is appended to a hash-chained audit log and returns an `audit_id`.
    ssha download web-1 /etc/hosts -
    ```
 
+## Commands that need sudo
+
+Use the configured SSH login for ordinary work. When an authorized task needs
+root, run that specific command with `sudo -n --`. The remote account must have
+sudo permission for the command, and ssha policy must allow the full command,
+including the sudo prefix. `-n` prevents a password prompt; it does not grant
+permission or make password-based sudo work.
+
+For a service restart the user has authorized:
+
+```bash
+ssha policy check web-1 -- sudo -n -- /usr/bin/systemctl restart nginx
+ssha run web-1 -- sudo -n -- /usr/bin/systemctl restart nginx
+```
+
+Over MCP, pass the same command string to `ssh_policy_check` and `ssh_exec`:
+
+```json
+{"host":"web-1","command":"sudo -n -- /usr/bin/systemctl restart nginx"}
+```
+
+Use the host and service discovered for the task. There is no ssha `--sudo`
+flag or MCP `sudo` parameter. Policy checks only check ssha rules; they do not
+check the remote sudoers configuration. In `readonly` mode, an allow rule for
+`systemctl` does not automatically permit `sudo -n -- /usr/bin/systemctl`.
+
+- Each execution starts a new SSH session. Use sudo on each command that needs
+  it; `sudo -i`, `sudo su` and `su` cannot switch later calls to root. Do not
+  rely on a sudo authentication cache surviving between calls.
+- ssha currently neither supplies sudo passwords nor provides an interactive
+  terminal. `password_env` / `password_file` are for SSH login only. If sudo
+  reports `a password is required`, a terminal requirement, or a sudoers
+  denial, stop and report it. The operator must arrange access for the needed
+  command or perform it themselves. Never read a credential file, put a
+  password in a command, pipe one to `sudo -S`, or change sudoers to work around
+  the failure.
+- A ssha policy denial is final. Do not retry it with sudo or a root shell.
+  A remote `Permission denied` may call for sudo when the task authorizes it,
+  but inspect the result before retrying: the first command may have partially
+  changed state. Do not automatically rerun failed commands as root.
+- Uploads and downloads use the SSH login's file permissions; sudo in another
+  call does not elevate SFTP. For an authorized write to a privileged path,
+  upload into a private temporary directory owned by the login user, then run
+  an explicitly permitted `sudo -n -- install ...` command with the intended
+  destination, owner and mode, and clean up the staging files. Keep destination
+  path restrictions in force; staging must not bypass a denied operation.
+
 ## Git
 
 Some remotes need an SSH key, others a username and token. Both live on the
