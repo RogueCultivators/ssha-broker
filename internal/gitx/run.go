@@ -88,6 +88,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	rawURL := req.URL
+	fromRemote := false
 	if rawURL == "" {
 		rawURL = remoteInArgs(req.Args)
 	}
@@ -101,6 +102,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 			return nil, err
 		}
 		rawURL = got
+		fromRemote = true
 	}
 	if req.URL != "" {
 		if other := remoteInArgs(req.Args); other != "" && other != req.URL {
@@ -153,6 +155,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 	}
 	grant := Grant{
 		Host:     remote.Host,
+		Port:     remote.EffectivePort(),
 		Path:     remote.Path,
 		Auth:     account.Auth.Type,
 		Username: account.Auth.Username,
@@ -193,13 +196,22 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 		// clone has no repository remote to rewrite. The URL has to be an argument.
 		gitArgs = append(gitArgs, rewritten)
 	default:
-		if remote.SameTransport(*account) && rewritten == remote.Raw {
-			break
+		if fromRemote {
+			// git resolves the remote's own URL, so rewrite that URL and then
+			// name the remote. Without the name, fetch/pull/push/ls-remote fall
+			// back to the current branch's upstream or origin, which may be a
+			// different server than the one the account was chosen for.
+			if !(remote.SameTransport(*account) && rewritten == remote.Raw) {
+				if strings.ContainsAny(rewritten, "=\n") || strings.ContainsAny(rawURL, "=\n") {
+					return nil, fmt.Errorf("git remote contains a character ssha will not pass to git config")
+				}
+				args = append(args, "-c", "url."+rewritten+".insteadof="+rawURL)
+			}
+			gitArgs = insertRemote(gitArgs, req.Remote)
+		} else {
+			// --url supplied the remote and it is not already an argument.
+			gitArgs = append([]string{rewritten}, gitArgs...)
 		}
-		if strings.ContainsAny(rewritten, "=\n") || strings.ContainsAny(rawURL, "=\n") {
-			return nil, fmt.Errorf("git remote contains a character ssha will not pass to git config")
-		}
-		args = append(args, "-c", "url."+rewritten+".insteadof="+rawURL)
 	}
 	if account.Auth.Type == "https" {
 		args = append(args, "-c", "credential.helper=!"+shellQuote(self)+" git-credential")
@@ -490,6 +502,19 @@ func commandLine(op string, args []string) string {
 		return op
 	}
 	return op + " " + strings.Join(args, " ")
+}
+
+// insertRemote names the remote in front of the git arguments. Without it,
+// fetch/pull/push/ls-remote use the current branch's upstream or origin, which
+// may be a different repository than the one the account was chosen for.
+func insertRemote(args []string, remote string) []string {
+	if remote == "" {
+		return args
+	}
+	if len(args) > 0 && args[0] == remote {
+		return args
+	}
+	return append([]string{remote}, args...)
 }
 
 func remoteInArgs(args []string) string {

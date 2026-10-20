@@ -26,8 +26,8 @@ func Credential(action string, in io.Reader, g Grant) (string, error) {
 	}
 	attrs := parseCredential(in)
 	host := attrs["host"]
-	if host == "" || !strings.EqualFold(host, g.Host) {
-		return "", fmt.Errorf("credential request for %q does not match the granted host", host)
+	if !credentialHostMatches(host, g) {
+		return "", fmt.Errorf("credential request for %q does not match the granted host %s", host, displayGrantHost(g))
 	}
 	if g.Path != "" {
 		path := strings.Trim(attrs["path"], "/")
@@ -70,6 +70,52 @@ func parseCredential(in io.Reader) map[string]string {
 		out[key] = val
 	}
 	return out
+}
+
+// credentialHostMatches reports whether the host attribute git sent is the
+// granted host. git appends the port to that attribute when the URL names a
+// non-standard one, so "git.example.com:14444" has to match a grant whose host
+// is "git.example.com" and whose port is 14444.
+func credentialHostMatches(host string, g Grant) bool {
+	reqHost, reqPort, ok := splitCredentialHost(host)
+	if !ok || !strings.EqualFold(reqHost, g.Host) {
+		return false
+	}
+	want := g.Port
+	if want == "" {
+		want = "443"
+	}
+	if reqPort == "" {
+		return want == "443"
+	}
+	return reqPort == want
+}
+
+// splitCredentialHost splits host[:port]. A bare IPv6 literal has no port and
+// is returned with its brackets removed.
+func splitCredentialHost(h string) (host, port string, ok bool) {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return "", "", false
+	}
+	if strings.HasPrefix(h, "[") || strings.Contains(h, ":") {
+		if host, port, err := net.SplitHostPort(h); err == nil {
+			return host, port, true
+		}
+		if strings.Count(h, ":") > 1 {
+			return strings.Trim(h, "[]"), "", true
+		}
+		return "", "", false
+	}
+	return h, "", true
+}
+
+// displayGrantHost is the host as an operator would write it.
+func displayGrantHost(g Grant) string {
+	if g.Port == "" || g.Port == "443" {
+		return g.Host
+	}
+	return net.JoinHostPort(g.Host, g.Port)
 }
 
 // sshTakesArg lists OpenSSH options that consume the next argv element.

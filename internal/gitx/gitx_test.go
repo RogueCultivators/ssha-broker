@@ -97,6 +97,73 @@ func TestCredentialRejectsOtherHost(t *testing.T) {
 	}
 }
 
+func TestCredentialAcceptsHostWithPort(t *testing.T) {
+	g := Grant{Auth: "https", Host: "git.mreln-ai.cn", Port: "14444", Path: "hbsp/EnterpriseProfile.git", Username: "octo", Secret: "s3cret-token"}
+	out, err := Credential("get", strings.NewReader("protocol=https\nhost=git.mreln-ai.cn:14444\npath=hbsp/EnterpriseProfile.git\n\n"), g)
+	if err != nil {
+		t.Fatalf("host with the granted port was refused: %v", err)
+	}
+	if !strings.Contains(out, "password=s3cret-token\n") {
+		t.Fatalf("fill = %q", out)
+	}
+
+	if _, err := Credential("get", strings.NewReader("protocol=https\nhost=git.mreln-ai.cn:22\npath=hbsp/EnterpriseProfile.git\n\n"), g); err == nil {
+		t.Fatal("a credential request for another port was accepted")
+	}
+
+	// A remote written without a port uses 443, so a grant for 443 matches.
+	g443 := Grant{Auth: "https", Host: "github.com", Port: "443", Path: "acme/app.git", Username: "octo", Secret: "tok"}
+	if _, err := Credential("get", strings.NewReader("protocol=https\nhost=github.com\npath=acme/app.git\n\n"), g443); err != nil {
+		t.Fatalf("default port was refused: %v", err)
+	}
+}
+
+func TestRunNamesTheRemote(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "seen")
+	script := filepath.Join(dir, "git")
+	body := "#!/bin/sh\nprintf '%s\\n' \"$*\" > " + shellQuote(out) + "\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSHA_TEST_GIT_TOKEN", "tok")
+	cfg := testConfig("https")
+	cfg.Git.Accounts[0].Hosts = []string{"git.example.com:14444"}
+	cfg.Git.Accounts[0].Auth.PasswordEnv = "SSHA_TEST_GIT_TOKEN"
+	r := &Runner{
+		Config: cfg,
+		Git:    script,
+		Self:   "/usr/bin/ssha",
+		LookupRemote: func(_, name string) (string, error) {
+			return "https://git.example.com:14444/acme/app.git", nil
+		},
+	}
+
+	// ls-remote with no repository argument must name the chosen remote, not
+	// fall back to origin.
+	if _, err := r.Run(context.Background(), Request{Op: "ls-remote", Dir: dir, Remote: "enterprise"}); err != nil {
+		t.Fatal(err)
+	}
+	assertSeen(t, out, "ls-remote enterprise")
+
+	// push keeps the refspec after the remote.
+	if _, err := r.Run(context.Background(), Request{Op: "push", Dir: dir, Remote: "enterprise", Args: []string{"main"}}); err != nil {
+		t.Fatal(err)
+	}
+	assertSeen(t, out, "push enterprise main")
+}
+
+func assertSeen(t *testing.T, path, want string) {
+	t.Helper()
+	seen, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(seen), want) {
+		t.Fatalf("git was not invoked with %q:\n%s", want, seen)
+	}
+}
+
 func TestCredentialRejectsNewline(t *testing.T) {
 	g := Grant{Auth: "https", Host: "github.com", Path: "acme/app.git", Username: "octo", Secret: "tok\nen"}
 	_, err := Credential("get", strings.NewReader("protocol=https\nhost=github.com\npath=acme/app.git\n\n"), g)

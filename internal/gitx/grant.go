@@ -26,8 +26,11 @@ const (
 // The secret is in the file, not in argv, so `ps` does not show it. A same-user
 // process can still read the file; that is the same boundary as the seal key.
 type Grant struct {
-	Token    string    `json:"token"`
-	Host     string    `json:"host"`
+	Token string `json:"token"`
+	Host  string `json:"host"`
+	// Port is the effective port the remote uses. git puts it in the credential
+	// request's host attribute when it is not the scheme default.
+	Port     string    `json:"port,omitempty"`
 	Path     string    `json:"path"`
 	Auth     string    `json:"auth"`
 	Username string    `json:"username,omitempty"`
