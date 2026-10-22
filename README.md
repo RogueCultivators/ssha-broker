@@ -733,7 +733,7 @@ ssha git fetch|pull|push|ls-remote [-C DIR] [--remote NAME] [--] [git args]
 ssha git clone [-C DIR] [--] <URL> [directory]
 ssha mcp [--http ADDR] [--verbose]
 ssha ui [--addr 127.0.0.1:8770] [--open] [--token-file PATH]
-ssha skill install [--dir DIR] [--force] | ssha skill print
+ssha skill install [--dir DIR] | ssha skill print
 ssha version
 ```
 

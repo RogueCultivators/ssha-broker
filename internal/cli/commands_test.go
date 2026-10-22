@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ssha/skills"
 )
 
 func TestParseHostPort(t *testing.T) {
@@ -161,5 +163,66 @@ func TestNormalizeExit(t *testing.T) {
 		if got := normalizeExit(tc.in); got != tc.want {
 			t.Errorf("normalizeExit(%d) = %d, want %d", tc.in, got, tc.want)
 		}
+	}
+}
+
+// The skill ships inside the binary, so an installed copy that predates an
+// upgrade must be refreshed rather than left behind: it would disagree with
+// `ssha skill print` and with what the editor writes.
+func TestSkillInstallRefreshesAStaleCopy(t *testing.T) {
+	dir := t.TempDir()
+	run := func() (int, string) {
+		var out, errs strings.Builder
+		a := &App{Stdout: &out, Stderr: &errs}
+		code := a.cmdSkill([]string{"install", "--dir", dir})
+		return code, out.String() + errs.String()
+	}
+	path := filepath.Join(dir, skills.Name, "SKILL.md")
+
+	code, out := run()
+	if code != ExitOK || !strings.Contains(out, "installed skill") {
+		t.Fatalf("first install: code=%d out=%q", code, out)
+	}
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(written) != skills.Content {
+		t.Fatal("the installed skill does not match the embedded one")
+	}
+
+	code, out = run()
+	if code != ExitOK || !strings.Contains(out, "up to date") {
+		t.Fatalf("second install: code=%d out=%q", code, out)
+	}
+
+	// An older build's copy, or a hand edit: install replaces it.
+	if err := os.WriteFile(path, []byte("---\nname: ssh-agent\n---\nold\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out = run()
+	if code != ExitOK || !strings.Contains(out, "updated skill") {
+		t.Fatalf("refresh: code=%d out=%q", code, out)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != skills.Content {
+		t.Fatalf("the stale copy was not refreshed (err=%v)", err)
+	}
+}
+
+// `ssha init` writes a file the operator then edits, so it must keep refusing
+// to replace one. The skill above is the opposite case.
+func TestInitRefusesToOverwriteAConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ssha.yaml")
+	var out, errs strings.Builder
+	a := &App{Stdout: &out, Stderr: &errs}
+	if code := a.cmdInit([]string{"--out", path}); code != ExitOK {
+		t.Fatalf("first init: code=%d err=%s", code, errs.String())
+	}
+	errs.Reset()
+	if code := a.cmdInit([]string{"--out", path}); code != ExitFail {
+		t.Fatalf("second init: code=%d, want a refusal", code)
+	}
+	if !strings.Contains(errs.String(), "already exists") {
+		t.Fatalf("unhelpful refusal: %q", errs.String())
 	}
 }

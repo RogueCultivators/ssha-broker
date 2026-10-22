@@ -1349,7 +1349,7 @@ func (a *App) cmdUI(args []string) int {
 // ---------------------------------------------------------------------------
 
 func (a *App) cmdSkill(args []string) int {
-	if a.groupHelp("skill", "Subcommands:\n  skill install [dir]   install the agent skill into a skills directory\n  skill print           print the agent skill to stdout", args) {
+	if a.groupHelp("skill", "Subcommands:\n  skill install [dir]   install the agent skill, refreshing an older copy\n  skill print           print the agent skill to stdout", args) {
 		return ExitOK
 	}
 	if len(args) == 0 {
@@ -1363,16 +1363,19 @@ func (a *App) cmdSkill(args []string) int {
 	case "install":
 		fs := a.newFlagSet("skill install")
 		dir := fs.String("dir", defaultSkillDir(), "skills directory")
-		force := fs.Bool("force", false, "overwrite an existing skill")
 		if code, ok := a.parse(fs, rest); !ok {
 			return code
 		}
 		path := filepath.Join(*dir, skills.Name, "SKILL.md")
-		if !*force {
-			if _, err := os.Stat(path); err == nil {
-				fmt.Fprintf(a.Stderr, "ssha: %s already exists (use --force to overwrite)\n", path)
-				return ExitFail
-			}
+		// The skill ships inside the binary, so install refreshes it: a copy left
+		// over from an older ssha silently disagrees with what `ssha skill print`
+		// and the editor show. `ssha init` is the opposite case - a hand-written
+		// config - and still refuses to overwrite.
+		previous, readErr := os.ReadFile(path)
+		existed := readErr == nil
+		if existed && string(previous) == skills.Content {
+			fmt.Fprintf(a.Stdout, "skill %s is up to date at %s\n", skills.Name, path)
+			return ExitOK
 		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return a.fail(err)
@@ -1380,7 +1383,11 @@ func (a *App) cmdSkill(args []string) int {
 		if err := os.WriteFile(path, []byte(skills.Content), 0o644); err != nil {
 			return a.fail(err)
 		}
-		fmt.Fprintf(a.Stdout, "installed skill %s to %s\n", skills.Name, path)
+		verb := "installed"
+		if existed {
+			verb = "updated"
+		}
+		fmt.Fprintf(a.Stdout, "%s skill %s to %s\n", verb, skills.Name, path)
 		return ExitOK
 	default:
 		return a.usageErr(fmt.Sprintf("unknown skill subcommand %q", sub))
