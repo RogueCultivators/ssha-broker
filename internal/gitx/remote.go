@@ -165,3 +165,18 @@ func (r Remote) Rewritten(auth, username string) string {
 func (r Remote) SameTransport(account config.GitAccount) bool {
 	return r.Transport() == account.Auth.Type
 }
+
+// RewrittenPort is the port the URL returned by Rewritten connects to.
+//
+// Converting an ssh remote to https moves it from 22 to 443, and git asks the
+// credential helper for that port. Granting the original remote's port instead
+// makes the helper refuse its own child.
+func (r Remote) RewrittenPort(auth string) string {
+	if r.Port != "" {
+		return r.Port
+	}
+	if auth == "ssh" {
+		return "22"
+	}
+	return "443"
+}

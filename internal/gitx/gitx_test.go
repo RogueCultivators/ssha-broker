@@ -3,6 +3,7 @@ package gitx
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -345,4 +346,71 @@ func contains(args []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// An ssh remote pushed with an https account is rewritten to https, so git asks
+// the credential helper for port 443. Granting the port the remote was written
+// with (22) made the helper refuse the request its own parent had just made:
+// "credential request for github.com does not match the granted host github.com:22".
+func TestRunGrantsThePortGitWillAskFor(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "grant")
+	script := filepath.Join(dir, "git")
+	body := "#!/bin/sh\ncp \"$" + grantEnv + "/" + grantFile + "\" " + shellQuote(out) + "\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSHA_TEST_GIT_TOKEN", "tok")
+	cfg := testConfig("https")
+	cfg.Git.Accounts[0].Auth.PasswordEnv = "SSHA_TEST_GIT_TOKEN"
+	r := &Runner{
+		Config: cfg,
+		Git:    script,
+		Self:   "/usr/bin/ssha",
+		LookupRemote: func(_, _ string) (string, error) {
+			return "git@github.com:acme/app.git", nil
+		},
+	}
+	if _, err := r.Run(context.Background(), Request{Op: "push", Dir: dir, Args: []string{"main"}}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var g Grant
+	if err := json.Unmarshal(raw, &g); err != nil {
+		t.Fatal(err)
+	}
+	if g.Port != "443" {
+		t.Fatalf("grant port = %q, want 443 for a rewritten https URL", g.Port)
+	}
+	// The request git actually sends for that URL must be accepted.
+	if _, err := Credential("get", strings.NewReader("protocol=https\nhost=github.com\npath=acme/app.git\n\n"), g); err != nil {
+		t.Fatalf("the helper refused the port it granted: %v", err)
+	}
+}
+
+func TestRewrittenPortFollowsTheTransport(t *testing.T) {
+	cases := []struct {
+		remote string
+		auth   string
+		want   string
+	}{
+		{"git@github.com:acme/app.git", "https", "443"},
+		{"git@github.com:acme/app.git", "ssh", "22"},
+		{"https://github.com/acme/app.git", "ssh", "22"},
+		{"https://github.com/acme/app.git", "https", "443"},
+		{"ssh://git@host:14444/acme/app.git", "https", "14444"},
+		{"https://host:14444/acme/app.git", "ssh", "14444"},
+	}
+	for _, tc := range cases {
+		r, err := ParseRemote(tc.remote)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.remote, err)
+		}
+		if got := r.RewrittenPort(tc.auth); got != tc.want {
+			t.Errorf("%s as %s: port = %q, want %q", tc.remote, tc.auth, got, tc.want)
+		}
+	}
 }

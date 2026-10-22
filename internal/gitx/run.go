@@ -154,8 +154,11 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("git account %s: key is encrypted and no passphrase is configured", account.Name)
 	}
 	grant := Grant{
-		Host:     remote.Host,
-		Port:     remote.EffectivePort(),
+		Host: remote.Host,
+		// The grant follows the URL git will actually dial, not the remote as it
+		// is written: an ssh remote pushed with an https account becomes
+		// https://host/..., and the helper is asked for port 443.
+		Port:     remote.RewrittenPort(account.Auth.Type),
 		Path:     remote.Path,
 		Auth:     account.Auth.Type,
 		Username: account.Auth.Username,
