@@ -80,11 +80,11 @@ make package-macos    # 只在 macOS 上有意义
 
 | | 路径 |
 |---|---|
-| 配置 | `~/.config/ssha/config.yaml`（系统级装在 `/etc/ssha/config.yaml`） |
+| 配置 | `~/.config/ssha/config.yaml`（系统级装在 `/etc/ssha/config.yaml`；Windows 为 `%APPDATA%\ssha\config.yaml`） |
 | 密码 | 配置旁边的 `secrets/<主机名>.password`，0600，加密保存 |
 | Git 密码 / 口令 | `secrets/git/<账号>.password` 或 `.passphrase`，0600，加密保存 |
 | 管理密码 | `secrets/ui-auth.json`，只锁配置界面 |
-| 审计日志 | `~/.local/share/ssha/audit.jsonl`（或配置里 `audit.path`） |
+| 审计日志 | `~/.local/share/ssha/audit.jsonl`（或配置里 `audit.path`；Windows 为 `%LOCALAPPDATA%\ssha\audit.jsonl`） |
 
 第一次打开时如果没有配置，ssha 会从模板生成一份。界面要先设管理密码。主机密码直接在界面里输，
 它会加密写成 0600 的文件，配置里只留一行 `password_file` 指过去。命令行和 MCP 自动解密，不用解锁命令。

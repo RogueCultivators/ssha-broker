@@ -5,7 +5,6 @@ package gitx
 import (
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 func writeAskpass(dir, self string) (string, error) {
@@ -18,5 +17,5 @@ func writeAskpass(dir, self string) (string, error) {
 }
 
 func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	return shQuote(s, false)
 }

@@ -103,8 +103,8 @@ ssha skill install            # 把 skill 装到 ~/.agents/skills/ssha-agent
 ssha mcp                      # 以 MCP stdio server 启动
 ```
 
-配置文件查找顺序：`--config` → `$SSHA_CONFIG` → `./ssha.yaml` → `~/.config/ssha/config.yaml`
-→ `/etc/ssha/config.yaml`。
+配置文件查找顺序：`--config` → `$SSHA_CONFIG` → `./ssha.yaml` → `%APPDATA%\ssha\config.yaml`（Windows）
+→ `~/.config/ssha/config.yaml` → `/etc/ssha/config.yaml`。
 
 ---
 
@@ -217,7 +217,7 @@ policy:
 
 ```yaml
 audit:
-  path: ~/.local/share/ssha/audit.jsonl
+  path: ~/.local/share/ssha/audit.jsonl   # Windows 默认 %LOCALAPPDATA%\ssha\audit.jsonl
   store_output: true        # 是否把 stdout/stderr 写进审计
   max_field_bytes: 65536    # 每条流的截断长度
 ```

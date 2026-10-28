@@ -18,7 +18,7 @@ func writeAskpass(dir, self string) (string, error) {
 }
 
 func shellQuote(s string) string {
-	return cmdQuote(s)
+	return shQuote(s, true)
 }
 
 func cmdQuote(s string) string {

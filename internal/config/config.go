@@ -585,23 +585,35 @@ func anchorPath(dir, p string) string {
 	if p == "" {
 		return p
 	}
-	p = ExpandHome(p)
-	if filepath.IsAbs(p) {
+	home, _ := os.UserHomeDir()
+	return anchorPathOn(dir, p, rune(filepath.Separator), home)
+}
+
+// anchorPathOn is anchorPath with the platform's separator and home injected, so
+// the Windows rules can be tested from any host.
+func anchorPathOn(dir, p string, sep rune, home string) string {
+	p = expandEnvs(p, sep)
+	p = expandHomePath(p, home, sep)
+	if isRootedPath(p, sep) {
 		return p
 	}
-	return filepath.Join(dir, p)
+	return joinPath(sep, dir, p)
 }
 
 // Common search locations, in precedence order.
 //
 //	--config flag, $SSHA_CONFIG, ./ssha.yaml, ./ssha.yml,
-//	~/.config/ssha/config.yaml, /etc/ssha/config.yaml
+//	%APPDATA%\ssha\config.yaml (Windows), ~/.config/ssha/config.yaml,
+//	/etc/ssha/config.yaml
 func Candidates() []string {
 	var out []string
 	if v := os.Getenv("SSHA_CONFIG"); v != "" {
 		out = append(out, ExpandHome(v))
 	}
 	out = append(out, "ssha.yaml", "ssha.yml")
+	if p := appDataPath("config.yaml"); p != "" {
+		out = append(out, p)
+	}
 	out = append(out, ExpandHome("~/.config/ssha/config.yaml"))
 	out = append(out, "/etc/ssha/config.yaml")
 	return out
@@ -617,22 +629,28 @@ func Discover() (string, error) {
 	return "", errors.New("no config file found; run `ssha init` or pass --config")
 }
 
-// ExpandHome expands a leading ~ and applies environment expansion.
+// ExpandHome expands a leading ~ and applies environment expansion. On Windows
+// that includes "~\..." and %VAR%, which is how paths are usually written there.
 func ExpandHome(p string) string {
 	if p == "" {
 		return p
 	}
-	p = os.ExpandEnv(p)
-	if p == "~" || strings.HasPrefix(p, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			p = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
-		}
+	sep := rune(filepath.Separator)
+	p = expandEnvs(p, sep)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
 	}
-	return p
+	return expandHomePath(p, home, sep)
 }
 
 // DefaultAuditPath is used when audit.path is unset.
 func DefaultAuditPath() string {
+	// Windows state belongs in %LOCALAPPDATA%, not in an XDG directory that no
+	// Windows tool looks at.
+	if p := localAppDataPath("audit.jsonl"); p != "" {
+		return p
+	}
 	if dir, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(dir, ".local", "share", "ssha", "audit.jsonl")
 	}
