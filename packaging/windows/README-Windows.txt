@@ -35,10 +35,11 @@ agent（Claude Code、Cursor、pi 等）只发受控的请求，看不到密码�
 
 3) 从开始菜单点 "ssha"，在窗口里添加主机，或者直接编辑配置：
 
-     %USERPROFILE%\.config\ssha\config.yaml
+     %APPDATA%\ssha\config.yaml
 
-   配置里的密码在界面里输入后会加密保存到
-   %USERPROFILE%\.config\ssha\secrets\，不以明文落盘。
+   （旧版本装在 %USERPROFILE%\.config\ssha\config.yaml 的配置会继续沿用。）
+   配置里的密码在界面里输入后会加密保存到同目录下的 secrets\，
+   不以明文落盘。
 
 
 自启动

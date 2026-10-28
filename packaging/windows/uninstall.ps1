@@ -64,7 +64,11 @@ if (Test-Path $InstallDir) {
 
 if ($Purge) {
     Say 'removing the config, secrets and audit log'
+    # Both the current %APPDATA% location and the older ~/.config one, plus the
+    # audit log under %LOCALAPPDATA% and the legacy ~/.local/share.
     $keep = @(
+        (Join-Path $env:APPDATA 'ssha'),
+        (Join-Path $env:LOCALAPPDATA 'ssha'),
         (Join-Path $env:USERPROFILE '.config\ssha'),
         (Join-Path $env:USERPROFILE '.local\share\ssha')
     )
@@ -77,8 +81,8 @@ if ($Purge) {
 }
 else {
     Say 'kept'
-    Note 'config + secrets: %USERPROFILE%\.config\ssha'
-    Note 'audit log:         %USERPROFILE%\.local\share\ssha'
+    Note 'config + secrets: %APPDATA%\ssha'
+    Note 'audit log:         %LOCALAPPDATA%\ssha'
     Note 'delete those by hand, or re-run with -Purge'
 }
 

@@ -105,8 +105,14 @@ if (-not $NoDesktop) {
     Note "Desktop: $desktop"
 }
 
-$configPath = Join-Path $env:USERPROFILE '.config\ssha\config.yaml'
-if (Test-Path $configPath) {
+# A config written by an older installer lives under ~/.config; keep using it
+# rather than creating a second one in %APPDATA% that would then win the search.
+$legacyConfig = Join-Path $env:USERPROFILE '.config\ssha\config.yaml'
+$configPath = Join-Path $env:APPDATA 'ssha\config.yaml'
+if (Test-Path $legacyConfig) {
+    Note "config: $legacyConfig (kept)"
+}
+elseif (Test-Path $configPath) {
     Note "config: $configPath (kept)"
 }
 elseif (-not $NoConfig) {
