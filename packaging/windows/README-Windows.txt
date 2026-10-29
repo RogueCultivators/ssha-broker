@@ -87,6 +87,25 @@ Agent 配置里让 ssha 作为 MCP 服务端。本机 stdio 最简单：
 HTTP 模式要先在配置里配 server.tokens，否则只监听本机回环。
 
 
+/data 被换成了 Windows 路径？
+-----------------------------
+
+ssha 不改写远端路径：work_dir、--cwd、上传下载的远端路径都是原样送到服务器。
+
+如果你在 Git Bash 或 MSYS2 里运行 ssha.exe，是 shell 在 ssha 看到参数之前就换了：
+
+  ssha run web-1 --cwd /data -- ls        # MSYS 会先把它变成 C:/Program Files/Git/data
+
+任选一种避开：
+
+  MSYS_NO_PATHCONV=1 ssha run web-1 --cwd /data -- ls
+  MSYS2_ARG_CONV_EXCL='*' ssha run web-1 --cwd /data -- ls
+  cmd /c "ssha run web-1 --cwd /data -- ls"     （cmd 不改写）
+  或者在 PowerShell 里跑
+
+想确认是谁改的，看审计记录：`ssha audit show <audit_id>` 里的 cwd 和 command
+就是 ssha 实际收到的内容。那里是 /data 说明 ssha 没动过。
+
 依赖
 ----
 

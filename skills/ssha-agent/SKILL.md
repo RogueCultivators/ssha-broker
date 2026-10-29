@@ -242,6 +242,11 @@ the address, say so and let the operator decide.
 - `keyboard-interactive was refused: the password is probably wrong` or
   `the server rejected every credential offered`: the credentials are wrong.
   Stop and report; do not retry with variations.
+- A remote path arrives looking like a Windows path (`C:/Program Files/Git/data`
+  instead of `/data`): ssha passes paths through unchanged, so the shell in front
+  of it rewrote the argument. On Windows that is Git Bash/MSYS path conversion.
+  Re-run with `MSYS_NO_PATHCONV=1` in the environment, or use a shell that does
+  not translate arguments. Do not rewrite the path by hand.
 
 ## Reviewing what happened
 
