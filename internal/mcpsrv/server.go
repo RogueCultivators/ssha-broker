@@ -53,6 +53,15 @@ Rules and behavior:
 - Never pass --reveal to the ssha CLI: that flag disables identity hiding and is for the
   human operator only.
 
+Elevation:
+- When a task needs root, pass sudo=true (CLI: --sudo). ssha answers sudo's password prompt
+  from the host's stored secret; sudoers still decides what the account may run.
+  Do not put a password in a command, and do not pipe one to sudo yourself.
+- Policy is checked on the sudo-prefixed command, so ssh_policy_check with sudo=true answers
+  the same question ssh_exec will ask. A readonly host needs an allow rule that matches "sudo ...".
+- If the result says no sudo password is stored, tell the user to set it in the editor
+  (高级设置 → sudo) or in sudo.password_env / sudo.password_file. Do not add NOPASSWD yourself.
+
 Git:
 - Call git_accounts before a push or fetch. It lists accounts and hosts, never a password or a key.
 - Call git with op set to fetch, pull, push, clone or ls-remote. dir is the repository.
@@ -214,6 +223,8 @@ type execInput struct {
 	Env            map[string]string `json:"env,omitempty" jsonschema:"Extra environment variables to export before the command."`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty" jsonschema:"Per-command timeout. Can only shorten the host's policy limit. 0 means use the policy limit."`
 	MaxOutputBytes int               `json:"max_output_bytes,omitempty" jsonschema:"Cap on captured stdout and stderr combined. Can only lower the host's policy limit."`
+	Sudo           bool              `json:"sudo,omitempty" jsonschema:"Run through sudo. ssha answers the password prompt; sudoers still decides what is allowed. Policy is checked on the sudo-prefixed command."`
+	SudoUser       string            `json:"sudo_user,omitempty" jsonschema:"Account to become when sudo is true. Defaults to the host's sudo.user, then root."`
 }
 
 type execManyInput struct {
@@ -224,6 +235,8 @@ type execManyInput struct {
 	Cwd            string   `json:"cwd,omitempty" jsonschema:"Working directory for each host."`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty" jsonschema:"Per-command timeout, capped by each host's policy."`
 	Concurrency    int      `json:"concurrency,omitempty" jsonschema:"Maximum parallel connections. Defaults to 8."`
+	Sudo           bool     `json:"sudo,omitempty" jsonschema:"Run through sudo on every host, as in ssh_exec."`
+	SudoUser       string   `json:"sudo_user,omitempty" jsonschema:"Account to become when sudo is true."`
 }
 
 type execManyOutput struct {
@@ -263,6 +276,7 @@ type downloadInput struct {
 type policyCheckInput struct {
 	Host    string `json:"host" jsonschema:"Host name to evaluate against."`
 	Command string `json:"command" jsonschema:"Command to test. Nothing is executed and nothing is audited."`
+	Sudo    bool   `json:"sudo,omitempty" jsonschema:"Check the sudo-prefixed form, exactly as ssh_exec with sudo=true would run it."`
 }
 
 type auditInput struct {
@@ -325,6 +339,8 @@ func registerTools(s *mcp.Server, be Backend) {
 			Env:            in.Env,
 			Timeout:        secondsToDuration(in.TimeoutSeconds),
 			MaxOutputBytes: in.MaxOutputBytes,
+			Sudo:           in.Sudo,
+			SudoUser:       in.SudoUser,
 		})
 		if res == nil {
 			return nil, broker.ExecResult{}, err
@@ -345,6 +361,8 @@ func registerTools(s *mcp.Server, be Backend) {
 			Cwd:         in.Cwd,
 			Timeout:     secondsToDuration(in.TimeoutSeconds),
 			Concurrency: in.Concurrency,
+			Sudo:        in.Sudo,
+			SudoUser:    in.SudoUser,
 		})
 		if err != nil {
 			return nil, execManyOutput{}, err
@@ -444,7 +462,11 @@ func registerTools(s *mcp.Server, be Backend) {
 		Name:        "ssh_policy_check",
 		Description: "Check whether a command would be allowed on a host, without executing it. Use before a risky command to avoid a denied audit entry.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in policyCheckInput) (*mcp.CallToolResult, any, error) {
-		d, err := be.PolicyCheck(in.Host, in.Command)
+		command := in.Command
+		if in.Sudo && !strings.HasPrefix(strings.TrimSpace(command), "sudo ") {
+			command = "sudo " + command
+		}
+		d, err := be.PolicyCheck(in.Host, command)
 		if err != nil {
 			return nil, nil, err
 		}

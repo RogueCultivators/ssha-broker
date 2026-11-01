@@ -136,6 +136,10 @@ hosts:
 #   proxy_jump: bastion                   # 通过另一台主机（写它的 name）
 #   disabled: true                        # 留在文件里但永不被选中
 #
+#   sudo:                                 # 需要 root 时（ssha run --sudo）
+#     user: root                          # 变成谁，默认 root
+#     password_env: SSHA_SUDO_PASSWORD    # 密码来源；也可以 password_file，或在界面里填
+#
 #   host_key:                             # 主机密钥校验，默认 fail-closed
 #     known_hosts: ~/.ssh/known_hosts     # 不给就用 ~/.ssh/known_hosts
 #     fingerprints: ["SHA256:..."]        # 或者直接钉指纹

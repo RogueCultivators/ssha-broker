@@ -685,13 +685,15 @@ func names(hs []config.Host) []string {
 // ---------------------------------------------------------------------------
 
 type runFlags struct {
-	cwd     string
-	cmd     string
-	timeout time.Duration
-	maxOut  int
-	dryRun  bool
-	env     kvFlag
-	fs      *flag.FlagSet
+	cwd      string
+	cmd      string
+	timeout  time.Duration
+	maxOut   int
+	dryRun   bool
+	sudo     bool
+	sudoUser string
+	env      kvFlag
+	fs       *flag.FlagSet
 }
 
 func (a *App) addRunFlags(name string) *runFlags {
@@ -701,6 +703,8 @@ func (a *App) addRunFlags(name string) *runFlags {
 	r.fs.DurationVar(&r.timeout, "timeout", 0, "per-command timeout; can only shorten the policy limit")
 	r.fs.IntVar(&r.maxOut, "max-output", 0, "max captured output bytes; can only lower the policy limit")
 	r.fs.Var(&r.env, "e", "extra environment variable KEY=VALUE (repeatable)")
+	r.fs.BoolVar(&r.sudo, "sudo", false, "run through sudo, answering its password from the host's stored sudo secret")
+	r.fs.StringVar(&r.sudoUser, "sudo-user", "", "account to become (default: the host's sudo.user, then root)")
 	return r
 }
 
@@ -741,6 +745,8 @@ func (a *App) cmdRun(args []string) int {
 		Env:            r.env,
 		Timeout:        r.timeout,
 		MaxOutputBytes: r.maxOut,
+		Sudo:           r.sudo,
+		SudoUser:       r.sudoUser,
 		DryRun:         r.dryRun,
 	})
 	if res == nil {
@@ -846,6 +852,8 @@ func (a *App) cmdMulti(args []string) int {
 		Timeout:        r.timeout,
 		MaxOutputBytes: r.maxOut,
 		Concurrency:    *concurrency,
+		Sudo:           r.sudo,
+		SudoUser:       r.sudoUser,
 	})
 	if err != nil {
 		return a.fail(err)
@@ -1026,6 +1034,7 @@ func (a *App) cmdPolicy(args []string) int {
 		return ExitOK
 	}
 	fs := a.newFlagSet("policy")
+	sudo := fs.Bool("sudo", false, "check the elevation form, as --sudo would run it")
 	if len(args) == 0 || args[0] != "check" {
 		return a.usageErr("usage: ssha policy check <host> [--] <command>")
 	}
@@ -1037,6 +1046,11 @@ func (a *App) cmdPolicy(args []string) int {
 		return a.usageErr("usage: ssha policy check <host> [--] <command>")
 	}
 	command := commandFrom(tail)
+	if *sudo && !strings.HasPrefix(strings.TrimSpace(command), "sudo ") {
+		// Exec evaluates the prefixed form, so the check must too or it would
+		// answer a different question than the one that gets asked.
+		command = "sudo " + command
+	}
 
 	b, err := a.open()
 	if err != nil {
@@ -1173,6 +1187,15 @@ func (a *App) cmdAuditShow(args []string) int {
 	return ExitOK
 }
 
+func firstNonEmptyStr(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func renderAuditDetail(r *audit.Record) string {
 	var sb strings.Builder
 	tw := tabwriter.NewWriter(&sb, 0, 4, 2, ' ', 0)
@@ -1196,6 +1219,11 @@ func renderAuditDetail(r *audit.Record) string {
 	row("command", r.Command)
 	row("path", r.Path)
 	row("cwd", r.Cwd)
+	if r.Sudo {
+		// Elevation is the difference between "ran a status check" and "ran it as
+		// root", so it belongs in the human-readable view too.
+		row("sudo", "yes (as "+firstNonEmptyStr(r.SudoUser, "root")+")")
+	}
 	row("decision", r.Decision)
 	row("reason", r.Reason)
 	if r.ExitCode != 0 {

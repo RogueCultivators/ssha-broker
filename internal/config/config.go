@@ -230,6 +230,27 @@ type Auth struct {
 	PasswordFile string `yaml:"password_file,omitempty" json:"password_file,omitempty"`
 }
 
+// Sudo says where the password for sudo comes from.
+//
+// Storing one here grants nothing: sudoers still decides what the account may
+// run. It only lets ssha answer sudo's prompt, because an agent's session has
+// no terminal to type into and a password must never appear in a command line.
+type Sudo struct {
+	// User is the account to become. Empty means root.
+	User string `yaml:"user,omitempty" json:"user,omitempty"`
+	// PasswordEnv and PasswordFile hold the password, in that precedence order.
+	PasswordEnv  string `yaml:"password_env,omitempty" json:"password_env,omitempty"`
+	PasswordFile string `yaml:"password_file,omitempty" json:"password_file,omitempty"`
+}
+
+// TargetUser returns the account sudo should become.
+func (s Sudo) TargetUser() string {
+	if s.User == "" {
+		return "root"
+	}
+	return s.User
+}
+
 // HostKey describes how the remote host key is verified.
 type HostKey struct {
 	// KnownHosts is a known_hosts file. Defaults to ~/.ssh/known_hosts.
@@ -253,6 +274,7 @@ type Host struct {
 	// being told an address.
 	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
 	Auth        Auth              `yaml:"auth" json:"auth"`
+	Sudo        Sudo              `yaml:"sudo,omitempty" json:"sudo,omitempty"`
 	HostKey     HostKey           `yaml:"host_key" json:"host_key"`
 	ProxyJump   string            `yaml:"proxy_jump,omitempty" json:"proxy_jump,omitempty"`
 	WorkDir     string            `yaml:"work_dir,omitempty" json:"work_dir,omitempty"`
@@ -572,6 +594,7 @@ func (c *Config) resolvePaths() {
 		a.KeyPath = anchorPath(dir, a.KeyPath)
 		a.PassphraseFile = anchorPath(dir, a.PassphraseFile)
 		a.PasswordFile = anchorPath(dir, a.PasswordFile)
+		c.Hosts[i].Sudo.PasswordFile = anchorPath(dir, c.Hosts[i].Sudo.PasswordFile)
 	}
 	for i := range c.Git.Accounts {
 		a := &c.Git.Accounts[i].Auth

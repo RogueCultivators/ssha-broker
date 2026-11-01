@@ -65,12 +65,23 @@ mkdir -p "$WORK/image"
 cp "$WORK/id_ed25519.pub" "$WORK/image/authorized_keys"
 cat > "$WORK/image/Dockerfile" <<'EOF'
 FROM alpine:3.20
-RUN apk add --no-cache openssh bash coreutils grep procps && ssh-keygen -A
+RUN apk add --no-cache openssh bash coreutils grep procps sudo && ssh-keygen -A
 RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh
 COPY authorized_keys /root/.ssh/authorized_keys
 RUN chmod 600 /root/.ssh/authorized_keys
 # Password auth is enabled too, so the password paths can be tested.
 RUN echo 'root:e2e-secret' | chpasswd
+# A non-root account whose sudo needs a password. This is the case that has no
+# NOPASSWD rule, and the only one where ssha has to answer the prompt itself.
+RUN adduser -D -s /bin/bash deploy \
+ && echo 'deploy:deploy-secret' | chpasswd \
+ && echo 'deploy ALL=(ALL) ALL' > /etc/sudoers.d/deploy \
+ && chmod 440 /etc/sudoers.d/deploy \
+ && mkdir -p /home/deploy/.ssh \
+ && cp /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys \
+ && chown -R deploy /home/deploy/.ssh \
+ && chmod 700 /home/deploy/.ssh \
+ && chmod 600 /home/deploy/.ssh/authorized_keys
 EXPOSE 22
 CMD ["/usr/sbin/sshd", "-D", "-e", \
      "-o", "PermitRootLogin=yes", \
@@ -153,6 +164,19 @@ hosts:
     tags: [auth]
     auth: {type: password, password_file: $WORK/password.txt}
     host_key: {known_hosts: $WORK/known_hosts}
+    policy: {mode: allow}
+  # Non-root login whose sudo wants a password.
+  - name: testbox-sudo
+    description: non-root login, sudo asks for a password
+    addr: 127.0.0.1
+    port: $PORT
+    user: deploy
+    tags: [sudo]
+    auth: {type: key, key_path: $WORK/id_ed25519}
+    host_key: {known_hosts: $WORK/known_hosts}
+    work_dir: /tmp
+    sudo:
+      password_env: SSHA_E2E_SUDO
     policy: {mode: allow}
   # The identity of this host must never reach the agent.
   - name: secret
@@ -534,6 +558,47 @@ log "skill"
 out=$("$BIN" skill print); contains "skill has frontmatter" "name: ssh-agent" "$out"
 out=$("$BIN" skill install --dir "$WORK/skills"); check "skill install" 0 $?
 [ -f "$WORK/skills/ssha-agent/SKILL.md" ] && pass "SKILL.md was written" || fail "SKILL.md missing"
+
+# ---------------------------------------------------------------------------
+log "sudo: ssha answers the password prompt"
+export SSHA_E2E_SUDO=deploy-secret
+
+out=$("$BIN" run testbox-sudo -- sudo -n -- id 2>&1); code=$?
+check "sudo -n fails without a NOPASSWD rule" 1 "$code"
+contains "the failure says --sudo would work" "--sudo" "$out"
+
+out=$("$BIN" run testbox-sudo --sudo -- id 2>&1); code=$?
+check "ssha elevates with the stored password" 0 "$code"
+contains "the command really ran as root" "uid=0" "$out"
+lacks "the sudo password is not in the output" "deploy-secret" "$out"
+
+out=$("$BIN" run testbox-sudo --sudo --json -- id 2>&1)
+contains "json reports the elevation" '"sudo": true' "$out"
+contains "json reports the target user" '"sudo_user": "root"' "$out"
+lacks "json does not carry the password" "deploy-secret" "$out"
+
+out=$("$BIN" run testbox-sudo --sudo --sudo-user root -- id 2>&1); code=$?
+check "--sudo-user root is honoured" 0 "$code"
+
+# The password must not reach the audit log either.
+aid=$("$BIN" run testbox-sudo --sudo --json -- id | sed -n 's/.*"audit_id": "\([^"]*\)".*/\1/p')
+[ -n "$aid" ] && pass "the elevated run returns an audit id" || fail "no audit id in the json result"
+rec=$("$BIN" audit show "$aid" 2>&1)
+contains "the audit records the elevation" "sudo:" "$rec"
+contains "the audit names the target user" "root" "$rec"
+lacks "the audit does not carry the password" "deploy-secret" "$rec"
+
+SSHA_E2E_SUDO=wrong-password "$BIN" run testbox-sudo --sudo -- id >"$WORK/sudo-wrong.txt" 2>&1; code=$?
+check "a wrong sudo password fails" 1 "$code"
+contains "and sudo says the password was refused" "incorrect password" "$(cat "$WORK/sudo-wrong.txt")"
+export SSHA_E2E_SUDO=deploy-secret
+
+# Elevation is its own privilege level: the readonly host allows `id`, but not
+# `sudo id`, so the check has to answer for the form that will actually run.
+out=$("$BIN" policy check testbox --sudo -- id 2>&1); code=$?
+check "policy check --sudo denies an allow list without sudo" 77 "$code"
+out=$("$BIN" policy check testbox -- id 2>&1); code=$?
+check "the same command without sudo is still allowed" 0 "$code"
 
 # ---------------------------------------------------------------------------
 log "mcp over stdio"

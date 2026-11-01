@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,8 @@ const (
 	SecretPassword SecretKind = "password"
 	// SecretPassphrase unlocks an encrypted private key.
 	SecretPassphrase SecretKind = "passphrase"
+	// SecretSudo is the password ssha gives sudo when a command needs root.
+	SecretSudo SecretKind = "sudo"
 )
 
 // SecretsDir is where secrets belonging to a config file live: a `secrets`
@@ -143,4 +146,44 @@ func HasSecret(path string) bool {
 // is present on disk.
 func HasStoredSecret(configPath, host string, kind SecretKind) bool {
 	return HasSecret(SecretPath(configPath, host, kind))
+}
+
+// ErrNoSudoPassword means nothing is configured to answer sudo's prompt for
+// this host.
+var ErrNoSudoPassword = errors.New("no sudo password configured")
+
+// SudoPassword returns the password ssha should give sudo for h: the
+// environment variable first, then the configured file, then the sealed secret
+// the editor writes. ErrNoSudoPassword means the operator has not provided one,
+// and the caller should fall back to `sudo -n` so a NOPASSWD host still works.
+func (c *Config) SudoPassword(h *Host) (string, error) {
+	if h == nil {
+		return "", ErrNoSudoPassword
+	}
+	if env := h.Sudo.PasswordEnv; env != "" {
+		v := os.Getenv(env)
+		if v == "" {
+			return "", fmt.Errorf("host %s: environment variable %s is empty", h.Name, env)
+		}
+		return v, nil
+	}
+	if f := h.Sudo.PasswordFile; f != "" {
+		v, err := ReadSecretFile(ExpandHome(f))
+		if err != nil {
+			return "", fmt.Errorf("host %s: read %s: %w", h.Name, f, err)
+		}
+		return v, nil
+	}
+	path := SecretPath(c.path, h.Name, SecretSudo)
+	v, err := ReadSecretFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", ErrNoSudoPassword
+		}
+		// A sealed secret that cannot be opened is a real problem: silently
+		// falling back to -n would turn "your key is broken" into "wrong
+		// password", which is much harder to diagnose.
+		return "", fmt.Errorf("host %s: %w", h.Name, err)
+	}
+	return v, nil
 }

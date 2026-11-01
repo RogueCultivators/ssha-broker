@@ -306,6 +306,12 @@ type ExecRequest struct {
 	Env            map[string]string
 	Timeout        time.Duration
 	MaxOutputBytes int
+	// Sudo runs the command through sudo. The password, if the host has one
+	// stored, is answered by ssha; sudoers still decides whether it is allowed.
+	Sudo bool
+	// SudoUser overrides the account to become; empty uses the host's
+	// sudo.user, then root.
+	SudoUser string
 	// DryRun only evaluates policy; nothing is executed and nothing is audited.
 	DryRun bool
 }
@@ -326,6 +332,8 @@ type ExecResult struct {
 	Decision   string `json:"decision"`
 	Reason     string `json:"reason,omitempty"`
 	DryRun     bool   `json:"dry_run,omitempty"`
+	Sudo       bool   `json:"sudo,omitempty"`
+	SudoUser   string `json:"sudo_user,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
 
@@ -340,7 +348,13 @@ func (b *Broker) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
 
 	res := &ExecResult{Host: h.Name, Command: req.Command, Decision: audit.DecisionAllowed}
 
-	decision := compiled.Decide(req.Command)
+	// Elevation is part of what is being allowed: a readonly host that permits
+	// `systemctl status` must not thereby permit `sudo systemctl status`.
+	decided := req.Command
+	if req.Sudo && !strings.HasPrefix(strings.TrimSpace(req.Command), "sudo ") {
+		decided = "sudo " + req.Command
+	}
+	decision := compiled.Decide(decided)
 	if !decision.Allowed {
 		res.Decision = audit.DecisionDenied
 		res.Reason = decision.Reason
@@ -352,8 +366,16 @@ func (b *Broker) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
 			Cwd:      req.Cwd,
 			Decision: audit.DecisionDenied,
 			Reason:   decision.Reason,
+			Sudo:     req.Sudo,
+			SudoUser: req.SudoUser,
 		})
 		return res, &DeniedError{Host: h.Name, Command: req.Command, Reason: decision.Reason}
+	}
+	if req.Sudo {
+		// Recorded before the dry-run return: a dry run reports what would have
+		// happened, including the elevation.
+		res.Sudo = true
+		res.SudoUser = firstNonEmpty(req.SudoUser, h.Sudo.TargetUser())
 	}
 	if req.DryRun {
 		res.DryRun = true
@@ -370,7 +392,22 @@ func (b *Broker) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
 	if err != nil {
 		return nil, err
 	}
-	runRes, runErr := b.runWithRetry(ctx, target, req.Command, cwd, env, timeout, maxBytes)
+	opts := sshx.RunOptions{Cwd: cwd, Env: env, Timeout: timeout, MaxBytes: maxBytes}
+	if req.Sudo {
+		user := res.SudoUser
+		password, perr := b.cfg.SudoPassword(h)
+		switch {
+		case perr == nil:
+			opts.Sudo = &sshx.SudoRun{User: user, Password: password}
+		case errors.Is(perr, config.ErrNoSudoPassword):
+			// No stored password: run with -n, so a NOPASSWD host still works and
+			// sudo's own message explains what is missing.
+			opts.Sudo = &sshx.SudoRun{User: user}
+		default:
+			return nil, perr
+		}
+	}
+	runRes, runErr := b.runWithRetry(ctx, target, req.Command, opts)
 
 	rec := &audit.Record{
 		Type:     audit.TypeExec,
@@ -378,6 +415,8 @@ func (b *Broker) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
 		Command:  req.Command,
 		Cwd:      cwd,
 		Decision: audit.DecisionAllowed,
+		Sudo:     req.Sudo,
+		SudoUser: res.SudoUser,
 	}
 	if runRes != nil {
 		res.ExitCode = runRes.ExitCode
@@ -404,6 +443,18 @@ func (b *Broker) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
 			res.Stderr = runErr.Error()
 		}
 	}
+	// sudo failing on a missing password is actionable, but its own message does
+	// not say what to do about it, and an agent will otherwise just report it.
+	if needsSudoPassword(res.Stderr, res.Error) {
+		switch {
+		case !req.Sudo:
+			res.Stderr += "\n[ssha] this host can be elevated: retry with --sudo (MCP: sudo: true) " +
+				"after storing its sudo password in the editor, or add a NOPASSWD rule in sudoers\n"
+		case opts.Sudo.Password == "":
+			res.Stderr += "\n[ssha] no sudo password is stored for this host: set it in the editor " +
+				"(高级设置 → sudo), or configure sudo.password_env / sudo.password_file\n"
+		}
+	}
 	rec.ID = b.record(rec)
 	res.AuditID = rec.ID
 
@@ -422,6 +473,9 @@ type MultiExecRequest struct {
 	Timeout        time.Duration
 	MaxOutputBytes int
 	Concurrency    int
+	// Sudo and SudoUser apply to every host, as in ExecRequest.
+	Sudo     bool
+	SudoUser string
 }
 
 // ExecMany runs the same command on every matching host, in parallel, and
@@ -459,6 +513,8 @@ func (b *Broker) ExecMany(ctx context.Context, req MultiExecRequest) ([]*ExecRes
 				Cwd:            req.Cwd,
 				Timeout:        req.Timeout,
 				MaxOutputBytes: req.MaxOutputBytes,
+				Sudo:           req.Sudo,
+				SudoUser:       req.SudoUser,
 			})
 			if res == nil {
 				res = &ExecResult{Host: name, Command: req.Command, ExitCode: -1, Decision: audit.DecisionDenied}
@@ -701,19 +757,19 @@ func (b *Broker) resolveTarget(h *config.Host) (sshx.Target, error) {
 	return t, nil
 }
 
-func (b *Broker) runWithRetry(ctx context.Context, t sshx.Target, command, cwd string, env map[string]string, timeout time.Duration, maxBytes int) (*sshx.RunResult, error) {
+func (b *Broker) runWithRetry(ctx context.Context, t sshx.Target, command string, opts sshx.RunOptions) (*sshx.RunResult, error) {
 	client, err := b.pool.Get(ctx, t)
 	if err != nil {
 		return nil, err
 	}
-	res, err := client.Run(ctx, command, cwd, env, timeout, maxBytes)
+	res, err := client.Run(ctx, command, opts)
 	if err != nil && sshx.IsConnError(err) {
 		b.pool.Invalidate(t.Name)
 		client, err2 := b.pool.Get(ctx, t)
 		if err2 != nil {
 			return res, err
 		}
-		return client.Run(ctx, command, cwd, env, timeout, maxBytes)
+		return client.Run(ctx, command, opts)
 	}
 	return res, err
 }
@@ -733,6 +789,14 @@ func clampInt(requested, limit int) int {
 		return limit
 	}
 	return requested
+}
+
+// needsSudoPassword reports whether sudo refused because it wanted a password.
+func needsSudoPassword(stderr, errText string) bool {
+	both := stderr + "\n" + errText
+	return strings.Contains(both, "a password is required") ||
+		strings.Contains(both, "a terminal is required") ||
+		strings.Contains(both, "no tty present")
 }
 
 func firstNonEmpty(vals ...string) string {
@@ -850,7 +914,7 @@ func (b *Broker) Test(ctx context.Context, name, probe string) *HostTest {
 	}
 	defer client.Close()
 
-	run, err := client.Run(ctx, probe, "", nil, 15*time.Second, 4096)
+	run, err := client.Run(ctx, probe, sshx.RunOptions{Timeout: 15 * time.Second, MaxBytes: 4096})
 	res.LatencyMS = time.Since(start).Milliseconds()
 	res.HostKeyType = client.HostKeyType()
 	res.HostKeyFingerprint = client.HostKeyFingerprint()

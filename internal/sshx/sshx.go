@@ -437,23 +437,54 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// Run executes command, optionally changing directory and exporting env vars.
+// RunOptions is one remote execution.
+type RunOptions struct {
+	// Cwd is the remote directory to start in.
+	Cwd string
+	// Env is exported before the command runs.
+	Env map[string]string
+	// Timeout caps the wall-clock time; zero means no local limit.
+	Timeout time.Duration
+	// MaxBytes caps the captured stdout+stderr.
+	MaxBytes int
+	// Sudo, when set, runs the command through sudo. Nil runs it as the login
+	// user.
+	Sudo *SudoRun
+}
+
+// SudoRun is how a command is elevated.
+type SudoRun struct {
+	// User is the account to become. Empty means sudo's default (root).
+	User string
+	// Password answers sudo's prompt, and is written to the session's stdin, not
+	// to the command line. Empty means the host is NOPASSWD and ssha must not
+	// wait for input, so sudo runs with -n.
+	Password string
+}
+
+// Run executes command with the given options.
 //
 // A non-zero remote exit status is reported through RunResult.ExitCode with a
 // nil error; a non-nil error means the command could not be run at all.
-func (c *Client) Run(ctx context.Context, command, cwd string, env map[string]string, timeout time.Duration, maxBytes int) (*RunResult, error) {
+func (c *Client) Run(ctx context.Context, command string, opts RunOptions) (*RunResult, error) {
 	sess, err := c.ssh.NewSession()
 	if err != nil {
 		return nil, fmt.Errorf("open session: %w", err)
 	}
 	defer sess.Close()
 
+	timeout, maxBytes := opts.Timeout, opts.MaxBytes
 	stdout := newLimitedBuffer(maxBytes)
 	stderr := newLimitedBuffer(maxBytes)
 	sess.Stdout = stdout
 	sess.Stderr = stderr
 
-	script := buildScript(command, cwd, env)
+	script, stdin := buildScript(command, opts)
+	if stdin != "" {
+		// sudo -S reads exactly one line; the command itself then sees EOF, which
+		// is the same as any other non-interactive call.
+		sess.Stdin = strings.NewReader(stdin)
+	}
 	start := time.Now()
 
 	if err := sess.Start(script); err != nil {
@@ -523,29 +554,68 @@ func exitCode(err error) int {
 	return -1
 }
 
-// buildScript composes the shell snippet executed on the remote host.
-func buildScript(command, cwd string, env map[string]string) string {
-	if cwd == "" && len(env) == 0 {
-		return command
+// buildScript composes the shell snippet executed on the remote host, plus the
+// stdin it needs.
+//
+// A sudo password never appears here: it goes to the session's stdin, so it is
+// not in the process table, not in the audit record and not in any error the
+// agent can read back.
+func buildScript(command string, opts RunOptions) (script, stdin string) {
+	cwd, env, sudo := opts.Cwd, opts.Env, opts.Sudo
+	if cwd == "" && len(env) == 0 && sudo == nil {
+		return command, ""
 	}
 	var b strings.Builder
 	b.WriteString("set -e\n")
 	if cwd != "" {
+		// cd happens before sudo, which keeps the working directory.
 		b.WriteString("cd " + shellQuote(cwd) + "\n")
 	}
-	if len(env) > 0 {
-		keys := make([]string, 0, len(env))
-		for k := range env {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			b.WriteString("export " + k + "=" + shellQuote(env[k]) + "\n")
-		}
+	if sudo == nil {
+		writeExports(&b, env)
+		b.WriteString("set +e\n")
+		b.WriteString(command)
+		return b.String(), ""
 	}
+	// sudo resets the environment, so the exports belong inside the shell it
+	// starts; exporting them before would silently drop them.
+	inner := command
+	if len(env) > 0 {
+		var e strings.Builder
+		writeExports(&e, env)
+		e.WriteString(command)
+		inner = e.String()
+	}
+	// -n for a NOPASSWD host: never wait for input that cannot arrive. -p ''
+	// keeps sudo's own prompt out of stderr, which is the first thing an agent
+	// would otherwise read.
+	flag := "-n"
+	if sudo.Password != "" {
+		flag = "-S"
+		stdin = sudo.Password + "\n"
+	}
+	line := "sudo " + flag + " -p '' "
+	if sudo.User != "" {
+		line += "--user " + shellQuote(sudo.User) + " "
+	}
+	line += "-- sh -c " + shellQuote(inner)
 	b.WriteString("set +e\n")
-	b.WriteString(command)
-	return b.String()
+	b.WriteString(line)
+	return b.String(), stdin
+}
+
+func writeExports(b *strings.Builder, env map[string]string) {
+	if len(env) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		b.WriteString("export " + k + "=" + shellQuote(env[k]) + "\n")
+	}
 }
 
 func shellQuote(s string) string {

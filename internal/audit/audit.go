@@ -80,6 +80,10 @@ type Record struct {
 
 	Stdout string `json:"stdout,omitempty"`
 	Stderr string `json:"stderr,omitempty"`
+	// Sudo records that the command ran through sudo, and as whom. The password
+	// is never part of a record.
+	Sudo     bool   `json:"sudo,omitempty"`
+	SudoUser string `json:"sudo_user,omitempty"`
 }
 
 func hashRecord(r Record, prevHash string) string {

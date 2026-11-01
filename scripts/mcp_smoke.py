@@ -50,6 +50,14 @@ show("tools/call ssh_audit", audit["count"])
 check = server.structured("ssh_policy_check", {"host": "testbox", "command": "ls /"})
 show("tools/call ssh_policy_check", check)
 
+# The same command, asked about in its elevated form: the readonly allow list
+# permits `id` but not `sudo id`, so the two answers must differ.
+plain = server.structured("ssh_policy_check", {"host": "testbox", "command": "id"})
+elevated = server.structured("ssh_policy_check", {"host": "testbox", "command": "id", "sudo": True})
+show("tools/call ssh_policy_check (plain vs sudo)", (plain["allowed"], elevated["allowed"]))
+if plain["allowed"] is not True or elevated["allowed"] is not False:
+    raise SystemExit("ssh_policy_check ignored sudo")
+
 stderr = server.close()
 if stderr.strip():
     print("\n=== server stderr ===")

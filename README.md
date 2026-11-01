@@ -334,6 +334,26 @@ ssha host-key prod-web             # 也可以直接传配置里的 host 名
 
 CI 里不想落盘私钥，就用 `key_env: SSHA_PRIVATE_KEY`（值直接是 PEM 内容）。
 
+#### sudo：需要 root 的命令
+
+普通操作走登录用户；某条命令需要 root 时，别把 `sudo` 写进命令里，用 `--sudo`：
+
+```bash
+ssha run web-1 --sudo -- systemctl restart nginx
+ssha policy check web-1 --sudo -- systemctl restart nginx   # 按提权后的形式判断
+```
+
+MCP 对应参数是 `sudo: true`（可选 `sudo_user`）。ssha 会用这台主机保存的 sudo
+密码回答 sudo 的提示 —— 密码走 ssh 的 stdin，不进命令行、不进结果、不进审计，
+模型也看不到。sudoers 仍然决定这个账号能跑什么，被它拒绝就是最终结果。
+
+密码可以在界面「高级设置」里填（加密保存），也可以用 `sudo.password_env` 或
+`sudo.password_file`。没配密码时 ssha 用 `sudo -n`，也就是要求目标机上有
+NOPASSWD 规则。
+
+> 策略按**提权后的形式**判断：readonly 主机允许 `systemctl status`，不等于允许
+> `sudo systemctl status`，白名单里要单独写。审计记录会带上 `sudo` 和 `sudo_user`。
+
 #### 情况 B：只能密码登录
 
 **最省事的办法：在界面里直接输。** 打开 `ssha ui`，选一台主机，认证类型选「密码」，
