@@ -106,6 +106,19 @@ ssha 不改写远端路径：work_dir、--cwd、上传下载的远端路径都�
 想确认是谁改的，看审计记录：`ssha audit show <audit_id>` 里的 cwd 和 command
 就是 ssha 实际收到的内容。那里是 /data 说明 ssha 没动过。
 
+上传下载的路径
+--------------
+
+远端路径原样发到服务器，ssha 不改写：
+
+  ssha download web-1 /var/log/app.log  ~/Downloads/app.log
+
+本地这一侧会展开 ~ 和 %USERPROFILE%，不用依赖 shell（cmd 不展开 ~）。
+上传同理：ssha upload web-1 ~/Downloads/app.conf /etc/app/app.conf
+
+远端路径必须是目标机认识的写法。目标是 Linux 就用 /data/app.conf；写成
+C:\data\app.conf 时只有 Windows 目标能用，posix 目标会报错并提示原因。
+
 依赖
 ----
 

@@ -599,10 +599,10 @@ func (b *Broker) Upload(ctx context.Context, req UploadRequest) (*TransferResult
 		DurationMS: res.DurationMS,
 	}
 	if err != nil {
-		res.Reason = err.Error()
+		res.Reason = remotePathHint(req.RemotePath, err)
 		res.Decision = audit.DecisionDenied
 		rec.Decision = audit.DecisionDenied
-		rec.Reason = err.Error()
+		rec.Reason = res.Reason
 	}
 	rec.ID = b.record(rec)
 	res.AuditID = rec.ID
@@ -674,10 +674,10 @@ func (b *Broker) Download(ctx context.Context, req DownloadRequest) (*TransferRe
 		DurationMS: res.DurationMS,
 	}
 	if err != nil {
-		res.Reason = err.Error()
+		res.Reason = remotePathHint(req.RemotePath, err)
 		res.Decision = audit.DecisionDenied
 		rec.Decision = audit.DecisionDenied
-		rec.Reason = err.Error()
+		rec.Reason = res.Reason
 	}
 	rec.ID = b.record(rec)
 	res.AuditID = rec.ID
@@ -797,6 +797,27 @@ func needsSudoPassword(stderr, errText string) bool {
 	return strings.Contains(both, "a password is required") ||
 		strings.Contains(both, "a terminal is required") ||
 		strings.Contains(both, "no tty present")
+}
+
+// remotePathHint explains the two ways a transfer path goes wrong on a machine
+// that is not the one being managed, without ever rewriting the path: ssha
+// cannot know whether the target speaks POSIX or Windows.
+func remotePathHint(remotePath string, err error) string {
+	msg := err.Error()
+	if !strings.ContainsRune(remotePath, '\\') && !looksLikeWindowsPath(remotePath) {
+		return msg
+	}
+	return msg + "; remote paths are sent exactly as written, so a backslash or drive letter " +
+		"only works on a Windows target. A shell in front of ssha (Git Bash/MSYS on Windows) " +
+		"can also rewrite the argument: try MSYS_NO_PATHCONV=1, or pass the path with the -- separator"
+}
+
+func looksLikeWindowsPath(p string) bool {
+	if len(p) >= 2 && p[1] == ':' {
+		c := p[0]
+		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	}
+	return false
 }
 
 func firstNonEmpty(vals ...string) string {

@@ -560,6 +560,25 @@ out=$("$BIN" skill install --dir "$WORK/skills"); check "skill install" 0 $?
 [ -f "$WORK/skills/ssha-agent/SKILL.md" ] && pass "SKILL.md was written" || fail "SKILL.md missing"
 
 # ---------------------------------------------------------------------------
+log "download: local paths get the same treatment as every other path"
+
+# ~ is expanded by ssha, not by the shell: on Windows no shell expands it, so
+# "~\Downloads\x" would otherwise be taken literally and fail. The local file
+# is checked, and a path that looks like a Windows path on a POSIX target is
+# reported with the reason instead of being rewritten.
+rm -f "$HOME/ssha-e2e-download.txt"
+out=$("$BIN" download testbox-rw /etc/hostname "~/ssha-e2e-download.txt" 2>&1); code=$?
+check "download to a ~ path" 0 "$code"
+[ -s "$HOME/ssha-e2e-download.txt" ] && pass "the file landed under the home directory" || fail "~/ was not expanded"
+rm -f "$HOME/ssha-e2e-download.txt"
+
+# A failed transfer is recorded as a denial (exit 77), same as a refused path.
+out=$("$BIN" download testbox-rw '/\data\x' - 2>&1); code=$?
+check "a Windows-looking remote path is refused" 77 "$code"
+contains "and the failure explains why" "remote paths are sent exactly as written" "$out"
+contains "and mentions the shell" "MSYS_NO_PATHCONV" "$out"
+
+# ---------------------------------------------------------------------------
 log "sudo: ssha answers the password prompt"
 export SSHA_E2E_SUDO=deploy-secret
 

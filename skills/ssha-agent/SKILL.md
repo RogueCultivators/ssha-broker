@@ -83,6 +83,7 @@ or denied, is appended to a hash-chained audit log and returns an `audit_id`.
    ```bash
    ssha upload web-1 ./local.conf /etc/app/app.conf --mode 0644
    ssha download web-1 /var/log/syslog ./syslog --max-bytes 200000
+   ssha download web-1 /var/log/syslog ~/Downloads/syslog   # ~ expands on both platforms
    echo "text" | ssha upload web-1 - /tmp/note.txt
    ssha download web-1 /etc/hosts -
    ```

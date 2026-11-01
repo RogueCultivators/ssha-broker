@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,5 +128,27 @@ func TestNeedsSudoPassword(t *testing.T) {
 		if got := needsSudoPassword(tc.stderr, tc.errText); got != tc.want {
 			t.Errorf("needsSudoPassword(%q, %q) = %v, want %v", tc.stderr, tc.errText, got, tc.want)
 		}
+	}
+}
+
+// A transfer path is never rewritten, so a Windows-looking one is reported with
+// the reason instead of being silently "fixed".
+func TestRemotePathHint(t *testing.T) {
+	base := errors.New("open /data/x: no such file")
+
+	if got := remotePathHint("/data/x", base); got != base.Error() {
+		t.Errorf("a POSIX path got a hint: %q", got)
+	}
+	for _, p := range []string{`\data\x`, `C:\data\x`, `C:/data/x`} {
+		got := remotePathHint(p, base)
+		if !strings.Contains(got, "remote paths are sent exactly as written") {
+			t.Errorf("%q did not get the hint: %q", p, got)
+		}
+		if !strings.Contains(got, "MSYS_NO_PATHCONV") {
+			t.Errorf("%q hint does not say how to check the shell: %q", p, got)
+		}
+	}
+	if !looksLikeWindowsPath(`D:/x`) || looksLikeWindowsPath("/data/x") || looksLikeWindowsPath("1:/x") {
+		t.Error("looksLikeWindowsPath is wrong")
 	}
 }

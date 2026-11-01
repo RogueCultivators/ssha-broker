@@ -1003,18 +1003,36 @@ func (a *App) cmdDownload(args []string) int {
 		}
 		return ExitOK
 	}
+	dst = localPath(dst)
 	if err := os.WriteFile(dst, res.Content, 0o644); err != nil {
-		return a.fail(err)
+		// The remote read already succeeded, so say which side failed: a bare
+		// "open x: no such file" next to a remote path is easy to misread.
+		abs, absErr := filepath.Abs(dst)
+		if absErr != nil {
+			abs = dst
+		}
+		return a.fail(fmt.Errorf("writing the local file %s: %w", abs, err))
 	}
 	fmt.Fprintf(a.Stderr, "wrote %d bytes from %s:%s to %s (audit %s)\n", res.Bytes, res.Host, res.Path, dst, res.AuditID)
 	return ExitOK
+}
+
+// localPath expands a path the user typed for this machine. Every other path
+// in ssha goes through config.ExpandHome, and this one has to as well: a shell
+// on Windows does not expand ~, so "~\Downloads\x" would otherwise be taken
+// literally and fail with "the system cannot find the path specified".
+func localPath(p string) string {
+	if p == "-" {
+		return p
+	}
+	return config.ExpandHome(p)
 }
 
 func readLocal(src string) ([]byte, error) {
 	if src == "-" {
 		return io.ReadAll(os.Stdin)
 	}
-	return os.ReadFile(src)
+	return os.ReadFile(localPath(src))
 }
 
 func parseOctalMode(s string) (os.FileMode, error) {
