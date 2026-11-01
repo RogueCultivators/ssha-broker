@@ -407,6 +407,7 @@ func (b *Broker) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
 			return nil, perr
 		}
 	}
+	res.Cwd = cwd
 	runRes, runErr := b.runWithRetry(ctx, target, req.Command, opts)
 
 	rec := &audit.Record{
