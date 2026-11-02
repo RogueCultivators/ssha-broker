@@ -26,6 +26,10 @@ jobs:
             exit 1
           fi
       - run: go vet ./...
+      # The packaging version rule is shell, not Go, so it gets its own check:
+      # a build made after a tag must sort after that tag, or every upgrade
+      # looks like a downgrade.
+      - run: ./scripts/version.sh --self-test
       - run: go test -race ./...
       - run: go build ./...
 
