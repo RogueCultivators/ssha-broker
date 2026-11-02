@@ -178,6 +178,17 @@ hosts:
     sudo:
       password_env: SSHA_E2E_SUDO
     policy: {mode: allow}
+  # Password login, sudo asks for a password, and nothing about sudo is
+  # configured: the login password is what sudo wants.
+  - name: testbox-sudo-pw
+    description: password login, sudo asks for the same password
+    addr: 127.0.0.1
+    port: $PORT
+    user: deploy
+    tags: [sudo]
+    auth: {type: password, password_env: SSHA_E2E_LOGIN}
+    host_key: {known_hosts: $WORK/known_hosts}
+    policy: {mode: allow}
   # The identity of this host must never reach the agent.
   - name: secret
     description: identity withheld from agents
@@ -282,6 +293,9 @@ if printf '%s' "$out" | grep -q "testbox-rw" <<<"$out"; then fail "multi --query
 # ---------------------------------------------------------------------------
 log "cli: auth methods"
 export SSHA_E2E_PASSWORD="e2e-secret"
+# The password host that elevates needs its login password exported for every
+# command, including the ones that run long before the sudo section.
+export SSHA_E2E_LOGIN="deploy-secret"
 
 out=$("$BIN" hosts test testbox --json); check "key auth self-test" 0 $?
 contains "self-test reports the host key fingerprint" 'SHA256:' "$out"
@@ -611,6 +625,14 @@ SSHA_E2E_SUDO=wrong-password "$BIN" run testbox-sudo --sudo -- id >"$WORK/sudo-w
 check "a wrong sudo password fails" 1 "$code"
 contains "and sudo says the password was refused" "incorrect password" "$(cat "$WORK/sudo-wrong.txt")"
 export SSHA_E2E_SUDO=deploy-secret
+
+# The default: a password login is all sudo needs. No sudo block was configured.
+out=$("$BIN" run testbox-sudo-pw --sudo -- id 2>&1); code=$?
+check "a password host elevates with no sudo configuration" 0 "$code"
+contains "and the command ran as root" "uid=0" "$out"
+lacks "the login password is not echoed" "deploy-secret" "$out"
+out=$("$BIN" hosts show testbox-sudo-pw | grep -i 'sudo password')
+contains "hosts show explains where it comes from" "login password" "$out"
 
 # Elevation is its own privilege level: the readonly host allows `id`, but not
 # `sudo id`, so the check has to answer for the form that will actually run.

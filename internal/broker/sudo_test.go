@@ -152,3 +152,46 @@ func TestRemotePathHint(t *testing.T) {
 		t.Error("looksLikeWindowsPath is wrong")
 	}
 }
+
+// The fallback is what makes "I already typed the account password" enough: with
+// no sudo block at all, a password host elevates using its login password.
+func TestSudoFallsBackToTheLoginPassword(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "ssha.yaml")
+	body := `version: 1
+audit:
+  path: ` + filepath.Join(dir, "audit.jsonl") + `
+hosts:
+  - name: box
+    addr: 127.0.0.1
+    port: 1
+    auth: {type: password, password_env: SSHA_TEST_LOGIN}
+    policy: {mode: allow}
+`
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSHA_TEST_LOGIN", "login-pw")
+	b, err := Open(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	h, err := b.cfg.Host("box")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same resolution Exec performs, without needing a server to dial.
+	password, perr := b.cfg.SudoPassword(h)
+	if perr == nil {
+		t.Fatalf("a separate sudo password was configured: %q", password)
+	}
+	login, lerr := b.cfg.LoginPassword(h)
+	if lerr != nil || login != "login-pw" {
+		t.Fatalf("LoginPassword = (%q, %v)", login, lerr)
+	}
+	if src := b.cfg.SudoPasswordSource(h); !strings.Contains(src, "login password") {
+		t.Fatalf("hosts show would not explain where the password comes from: %q", src)
+	}
+}

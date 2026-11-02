@@ -343,13 +343,15 @@ ssha run web-1 --sudo -- systemctl restart nginx
 ssha policy check web-1 --sudo -- systemctl restart nginx   # 按提权后的形式判断
 ```
 
-MCP 对应参数是 `sudo: true`（可选 `sudo_user`）。ssha 会用这台主机保存的 sudo
-密码回答 sudo 的提示 —— 密码走 ssh 的 stdin，不进命令行、不进结果、不进审计，
-模型也看不到。sudoers 仍然决定这个账号能跑什么，被它拒绝就是最终结果。
+MCP 对应参数是 `sudo: true`。
 
-密码可以在界面「高级设置」里填（加密保存），也可以用 `sudo.password_env` 或
-`sudo.password_file`。没配密码时 ssha 用 `sudo -n`，也就是要求目标机上有
-NOPASSWD 规则。
+**密码就是登录密码，不用配第二份。** sudo 问的是运行它的那个用户的密码，也就是
+`auth.type: password` 的那份密码；ssha 把它通过 ssh 的 stdin 交给 `sudo -S`，
+不进命令行、不进结果、不进审计，模型也看不到。sudoers 决定这个账号能跑什么，
+被它拒绝就是最终结果。
+
+用私钥 / ssh-agent 登录的主机没有密码可交，这时 `--sudo` 依赖目标机上的 NOPASSWD
+规则；确实需要密码时，才用 `sudo.password_env` / `sudo.password_file` 单独给一份。
 
 > 策略按**提权后的形式**判断：readonly 主机允许 `systemctl status`，不等于允许
 > `sudo systemctl status`，白名单里要单独写。审计记录会带上 `sudo` 和 `sudo_user`。

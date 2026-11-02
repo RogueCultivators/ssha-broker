@@ -302,6 +302,7 @@ func renderHostDetail(h broker.HostInfo) string {
 	row("auth", h.Auth)
 	row("via jump host", h.ProxyJump)
 	row("work dir", h.WorkDir)
+	row("sudo password", h.SudoPassword)
 	row("policy mode", h.PolicyMode)
 	row("timeout", h.Timeout)
 	row("max output", fmt.Sprintf("%d bytes", h.MaxOutputSize))

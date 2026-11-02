@@ -105,11 +105,12 @@ Over MCP, pass `sudo: true` (and optionally `sudo_user`) to `ssh_exec`,
 {"host":"web-1","command":"systemctl restart nginx","sudo":true}
 ```
 
-ssha then runs the command as root, answering sudo's password prompt with the
-secret the operator stored for that host. The password goes over ssh stdin: it
+ssha then runs the command as root, answering sudo's password prompt itself with
+the account's own login password: sudo asks for the password of the user running
+it, so nothing extra has to be configured. The password goes over ssh stdin: it
 is not in the command line, not in the result, not in the audit log, and not
-visible to you. sudoers still decides what the account may run, so a denial
-from sudo is final.
+visible to you. sudoers still decides what the account may run, so a denial from
+sudo is final.
 
 - Policy is checked on the `sudo`-prefixed form, so a readonly host needs an
   allow rule that matches `sudo ...` as well. `ssha policy check --sudo` answers
@@ -117,10 +118,10 @@ from sudo is final.
 - Each execution is a new session, so `sudo -i` or `su` cannot leave root for
   later calls. Elevate each command that needs it.
 - Do not write `sudo` into the command yourself when `sudo: true` is available;
-  ssha would prefix it again. If a result says `no sudo password is stored`,
-  tell the user to set one in the editor (高级设置 → sudo) or via
-  `sudo.password_env` / `sudo.password_file`. Never add a NOPASSWD rule, read a
-  credential file, or pipe a password to `sudo -S` yourself.
+  ssha would prefix it again. A host that logs in with a key has no password to
+  give, so if the result says no sudo password is available, report it and let
+  the user decide (a NOPASSWD rule is their call). Never add a NOPASSWD rule
+  yourself, read a credential file, or pipe a password to `sudo -S`.
 - Uploads and downloads run as the login user; sudo does not elevate SFTP. For
   an authorized write to a privileged path, upload into a private temporary
   directory, then run an explicitly permitted `install`/`mv` with sudo, and

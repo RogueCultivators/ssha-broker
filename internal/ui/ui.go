@@ -360,10 +360,9 @@ type hostView struct {
 	PassphraseReady  bool `json:"passphrase_ready"`
 	PasswordSealed   bool `json:"password_sealed"`
 	PassphraseSealed bool `json:"passphrase_sealed"`
-	// SudoReady reports anywhere the sudo password can come from, because any of
-	// env, file or the stored secret is enough to answer the prompt.
-	SudoReady  bool `json:"sudo_ready"`
-	SudoSealed bool `json:"sudo_sealed"`
+	// SudoReady reports whether `--sudo` has a password to answer with. A
+	// password login is enough; a key login needs an explicit one.
+	SudoReady bool `json:"sudo_ready"`
 }
 
 type statePayload struct {
@@ -419,9 +418,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 			PassphraseReady:  config.HasSecret(h.Auth.PassphraseFile),
 			PasswordSealed:   config.SecretSealed(h.Auth.PasswordFile),
 			PassphraseSealed: config.SecretSealed(h.Auth.PassphraseFile),
-			SudoReady: h.Sudo.PasswordEnv != "" || config.HasSecret(h.Sudo.PasswordFile) ||
+			SudoReady: h.AuthType() == "password" || h.Sudo.PasswordEnv != "" ||
+				config.HasSecret(h.Sudo.PasswordFile) ||
 				config.HasStoredSecret(s.cfgPath, h.Name, config.SecretSudo),
-			SudoSealed: config.SecretSealed(config.SecretPath(s.cfgPath, h.Name, config.SecretSudo)),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -525,9 +524,9 @@ func (s *Server) handleSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := config.SecretKind(in.Kind)
 	switch kind {
-	case config.SecretPassword, config.SecretPassphrase, config.SecretSudo:
+	case config.SecretPassword, config.SecretPassphrase:
 	default:
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("kind 只能是 password、passphrase 或 sudo，收到 %q", in.Kind))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("kind 只能是 password 或 passphrase，收到 %q", in.Kind))
 		return
 	}
 	current, err := s.broker().Config().Host(in.Host)
@@ -550,8 +549,6 @@ func (s *Server) handleSecret(w http.ResponseWriter, r *http.Request) {
 			updated.Auth.PasswordFile = ""
 		case kind == config.SecretPassphrase && updated.Auth.PassphraseFile == ours:
 			updated.Auth.PassphraseFile = ""
-		case kind == config.SecretSudo && updated.Sudo.PasswordFile == ours:
-			updated.Sudo.PasswordFile = ""
 		}
 	} else {
 		path, err := config.WriteSecret(s.cfgPath, in.Host, kind, in.Value)
@@ -564,10 +561,6 @@ func (s *Server) handleSecret(w http.ResponseWriter, r *http.Request) {
 			cleared = updated.Auth.PasswordEnv
 			updated.Auth.PasswordEnv = ""
 			updated.Auth.PasswordFile = path
-		case config.SecretSudo:
-			cleared = updated.Sudo.PasswordEnv
-			updated.Sudo.PasswordEnv = ""
-			updated.Sudo.PasswordFile = path
 		default:
 			cleared = updated.Auth.PassphraseEnv
 			updated.Auth.PassphraseEnv = ""

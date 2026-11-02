@@ -160,14 +160,16 @@ func newSessionID() string {
 // Fields that a host's disclosure policy withholds are omitted entirely rather
 // than sent empty, so a caller can tell "hidden" from "not configured".
 type HostInfo struct {
-	Name          string   `json:"name"`
-	Addr          string   `json:"addr,omitempty"`
-	User          string   `json:"user,omitempty"`
-	Tags          []string `json:"tags,omitempty"`
-	Description   string   `json:"description,omitempty"`
-	Auth          string   `json:"auth,omitempty"`
-	ProxyJump     string   `json:"proxy_jump,omitempty"`
-	WorkDir       string   `json:"work_dir,omitempty"`
+	Name        string   `json:"name"`
+	Addr        string   `json:"addr,omitempty"`
+	User        string   `json:"user,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Auth        string   `json:"auth,omitempty"`
+	ProxyJump   string   `json:"proxy_jump,omitempty"`
+	WorkDir     string   `json:"work_dir,omitempty"`
+	// SudoPassword is where the sudo password comes from, never the password.
+	SudoPassword  string   `json:"sudo_password,omitempty"`
 	PolicyMode    string   `json:"policy_mode"`
 	Allow         []string `json:"allow_commands,omitempty"`
 	Deny          []string `json:"deny_commands,omitempty"`
@@ -215,6 +217,7 @@ func (b *Broker) hostInfo(h *config.Host) HostInfo {
 		info.Auth = h.AuthType()
 		info.ProxyJump = h.ProxyJump
 		info.WorkDir = h.WorkDir
+		info.SudoPassword = b.cfg.SudoPasswordSource(h)
 	}
 	return info
 }
@@ -396,12 +399,20 @@ func (b *Broker) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
 	if req.Sudo {
 		user := res.SudoUser
 		password, perr := b.cfg.SudoPassword(h)
+		if errors.Is(perr, config.ErrNoSudoPassword) {
+			// sudo asks for the password of the user running it, which is the
+			// login user. A host that logs in with a password therefore needs no
+			// separate sudo configuration; only a different password does.
+			if login, lerr := b.cfg.LoginPassword(h); lerr == nil && login != "" {
+				password, perr = login, nil
+			}
+		}
 		switch {
 		case perr == nil:
 			opts.Sudo = &sshx.SudoRun{User: user, Password: password}
 		case errors.Is(perr, config.ErrNoSudoPassword):
-			// No stored password: run with -n, so a NOPASSWD host still works and
-			// sudo's own message explains what is missing.
+			// Nothing to answer with: run with -n, so a NOPASSWD host still works
+			// and sudo's own message explains what is missing.
 			opts.Sudo = &sshx.SudoRun{User: user}
 		default:
 			return nil, perr
@@ -449,11 +460,17 @@ func (b *Broker) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
 	if needsSudoPassword(res.Stderr, res.Error) {
 		switch {
 		case !req.Sudo:
-			res.Stderr += "\n[ssha] this host can be elevated: retry with --sudo (MCP: sudo: true) " +
-				"after storing its sudo password in the editor, or add a NOPASSWD rule in sudoers\n"
+			res.Stderr += "\n[ssha] this host can be elevated: retry with --sudo (MCP: sudo: true). " +
+				"A password host uses its login password automatically; a key host needs a sudo password " +
+				"in the editor, or a NOPASSWD rule in sudoers\n"
 		case opts.Sudo.Password == "":
-			res.Stderr += "\n[ssha] no sudo password is stored for this host: set it in the editor " +
-				"(高级设置 → sudo), or configure sudo.password_env / sudo.password_file\n"
+			// Naming the file is the point: a password typed in the editor while
+			// ssha runs with a different config lands somewhere else, and that is
+			// invisible unless the path is printed.
+			res.Stderr += fmt.Sprintf("\n[ssha] no sudo password for host %s: it logs in without a password, "+
+				"and none is set at sudo.password_env, sudo.password_file or %s. Set one in the editor "+
+				"(高级设置 → sudo) for this config file, or use a NOPASSWD rule\n",
+				h.Name, config.SecretPath(b.cfg.Path(), h.Name, config.SecretSudo))
 		}
 	}
 	rec.ID = b.record(rec)

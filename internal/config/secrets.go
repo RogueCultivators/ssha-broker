@@ -152,6 +152,52 @@ func HasStoredSecret(configPath, host string, kind SecretKind) bool {
 // this host.
 var ErrNoSudoPassword = errors.New("no sudo password configured")
 
+// LoginPassword returns the password ssha logs in with, for auth.type=password:
+// the environment variable first, then the configured file, then the sealed
+// secret the editor writes. ErrNoSudoPassword means this host does not log in
+// with a password at all.
+func (c *Config) LoginPassword(h *Host) (string, error) {
+	if h == nil || h.AuthType() != "password" {
+		return "", ErrNoSudoPassword
+	}
+	if env := h.Auth.PasswordEnv; env != "" {
+		v := os.Getenv(env)
+		if v == "" {
+			return "", fmt.Errorf("host %s: environment variable %s is empty", h.Name, env)
+		}
+		return v, nil
+	}
+	if f := h.Auth.PasswordFile; f != "" {
+		return ReadSecretFile(ExpandHome(f))
+	}
+	return "", ErrNoSudoPassword
+}
+
+// SudoPasswordSource names where a host's sudo password would come from,
+// without reading it. An empty result means there is none, which is exactly what
+// `ssha hosts show` has to tell an operator whose password seems ignored.
+func (c *Config) SudoPasswordSource(h *Host) string {
+	if h == nil {
+		return ""
+	}
+	if h.Sudo.PasswordEnv != "" {
+		return "environment variable " + h.Sudo.PasswordEnv
+	}
+	if h.Sudo.PasswordFile != "" {
+		return "file " + ExpandHome(h.Sudo.PasswordFile)
+	}
+	path := SecretPath(c.path, h.Name, SecretSudo)
+	if _, err := os.Stat(path); err == nil {
+		return "stored secret " + path
+	}
+	// sudo asks for the invoking user's own password, so the login password is
+	// the default rather than a second thing to configure.
+	if h.AuthType() == "password" {
+		return "the login password"
+	}
+	return ""
+}
+
 // SudoPassword returns the password ssha should give sudo for h: the
 // environment variable first, then the configured file, then the sealed secret
 // the editor writes. ErrNoSudoPassword means the operator has not provided one,

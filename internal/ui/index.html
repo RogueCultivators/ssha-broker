@@ -525,30 +525,7 @@
           <p class="hint" id="password-state"></p>
         </div>
 
-        <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
-          <label for="f-sudo-user">sudo 用户名</label>
-          <input id="f-sudo-user" placeholder="留空就是 root">
-          <label for="f-sudo-password" style="margin-top:8px">sudo 密码</label>
-          <div class="row">
-            <input id="f-sudo-password" type="password" autocomplete="new-password" placeholder="留空表示不修改">
-            <button type="button" id="sudo-clear">清除</button>
-          </div>
-          <p class="hint" id="sudo-state"></p>
-          <p class="hint">需要 root 时用 <code>--sudo</code>（MCP 是 <code>sudo: true</code>），密码由 ssha 从 stdin 交给 sudo，不进命令行、不进审计、模型看不到。sudoers 决定能跑什么。</p>
-          <details class="adv" style="margin-top:6px">
-            <summary>高级：sudo 密码的来源</summary>
-            <div class="grid" style="margin-top:8px">
-              <div>
-                <label for="f-sudo-password_env">密码环境变量（优先于文件）</label>
-                <input id="f-sudo-password_env" placeholder="SSHA_SUDO_PASSWORD">
-              </div>
-              <div>
-                <label for="f-sudo-password_file">密码文件</label>
-                <input id="f-sudo-password_file" placeholder="~/.config/ssha/sudo.pass">
-              </div>
-            </div>
-          </details>
-        </div>
+        <p class="hint" id="sudo-state"></p>
 
         <p class="hint">保存在 <code id="secrets-dir">secrets/</code> 下（0600），加密保存，不进配置文件，界面不显示原文。</p>
 
@@ -1172,8 +1149,6 @@ function loadHost() {
   v("f-key_path", h.auth?.key_path); v("f-key_env", h.auth?.key_env);
   v("f-passphrase_env", h.auth?.passphrase_env); v("f-passphrase_file", h.auth?.passphrase_file);
   v("f-password_env", h.auth?.password_env); v("f-password_file", h.auth?.password_file);
-  v("f-sudo-user", h.sudo?.user);
-  v("f-sudo-password_env", h.sudo?.password_env); v("f-sudo-password_file", h.sudo?.password_file);
 
   v("f-known_hosts", h.host_key?.known_hosts);
   v("f-fingerprints", (h.host_key?.fingerprints || []).join("\n"));
@@ -1196,7 +1171,6 @@ function loadHost() {
   // Never carry a typed secret across hosts.
   $("f-password").value = "";
   $("f-passphrase").value = "";
-  $("f-sudo-password").value = "";
   renderSecretState(h);
   renderWarnings(h.warnings || []);
   syncAuthFields();
@@ -1216,9 +1190,11 @@ function renderSecretState(h) {
   };
   $("password-state").innerHTML = describe(h.auth?.password_env, h.auth?.password_file, h.password_ready, h.password_sealed);
   $("passphrase-state").innerHTML = describe(h.auth?.passphrase_env, h.auth?.passphrase_file, h.passphrase_ready, h.passphrase_sealed);
-  $("sudo-state").innerHTML = h.sudo_ready
-    ? describe(h.sudo?.password_env, h.sudo?.password_file, true, h.sudo_sealed)
-    : "还没有设置：需要 root 时只能靠 sudoers 里的 NOPASSWD";
+  // sudo asks for the password of the user who runs it, so a password login is
+  // all it takes. Say that once, instead of asking for a second password.
+  $("sudo-state").innerHTML = h.auth?.type === "password"
+    ? "要 root 权限时用 <code>--sudo</code>，ssha 会用这个登录密码回答 sudo。"
+    : "要 root 权限时用 <code>--sudo</code>：私钥/agent 登录没有密码可用，需要目标机上的 sudoers 放行（NOPASSWD）。";
   if (state && state.secrets_dir) {
     $("secrets-dir").textContent = state.secrets_dir.replace(/^.*\//, "");
     $("secrets-dir").title = state.secrets_dir;
@@ -1282,13 +1258,6 @@ function collect() {
     auth.password_env = val("f-password_env");
     auth.password_file = val("f-password_file");
   }
-  const sudoUser = val("f-sudo-user"), sudoEnv = val("f-sudo-password_env"), sudoFile = val("f-sudo-password_file");
-  if (sudoUser || sudoEnv || sudoFile) {
-    h.sudo = {};
-    if (sudoUser) h.sudo.user = sudoUser;
-    if (sudoEnv) h.sudo.password_env = sudoEnv;
-    if (sudoFile) h.sudo.password_file = sudoFile;
-  }
   const hk = h.host_key;
   hk.known_hosts = val("f-known_hosts");
   hk.fingerprints = lines($("f-fingerprints").value);
@@ -1332,7 +1301,6 @@ $("form").addEventListener("submit", async (e) => {
   const typed = [
     ["password", $("f-password").value, "密码"],
     ["passphrase", $("f-passphrase").value, "私钥口令"],
-    ["sudo", $("f-sudo-password").value, "sudo 密码"],
   ].filter(([, v]) => v);
 
   $("save").disabled = true;
@@ -1367,7 +1335,6 @@ async function clearSecret(kind, label) {
 }
 $("password-clear").addEventListener("click", () => clearSecret("password", "密码"));
 $("passphrase-clear").addEventListener("click", () => clearSecret("passphrase", "私钥口令"));
-$("sudo-clear").addEventListener("click", () => clearSecret("sudo", "sudo 密码"));
 
 $("revert").addEventListener("click", loadHost);
 
@@ -2136,7 +2103,7 @@ $("new").addEventListener("click", () => {
   const v = (id, val) => { $(id).value = val ?? ""; };
   ["f-name", "f-addr", "f-port", "f-user", "f-description", "f-tags",
    "f-key_path", "f-key_env", "f-passphrase_env", "f-passphrase_file", "f-password", "f-passphrase",
-   "f-password_env", "f-password_file", "f-sudo-user", "f-sudo-password_env", "f-sudo-password_file", "f-known_hosts", "f-fingerprints",
+   "f-password_env", "f-password_file", "f-known_hosts", "f-fingerprints",
    "f-timeout", "f-max", "f-allow", "f-deny", "f-deny_paths", "f-redact_patterns",
    "f-proxy_jump", "f-work_dir"].forEach((id) => v(id, ""));
   $("f-disabled").checked = false;

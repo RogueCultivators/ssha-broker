@@ -85,3 +85,42 @@ func TestSudoPasswordFileIsAnchored(t *testing.T) {
 		t.Fatalf("password_file = %q, want %q", cfg.Hosts[0].Sudo.PasswordFile, want)
 	}
 }
+
+// sudo asks for the password of the user who runs it, so a host that logs in
+// with a password already has what sudo wants. Making the operator configure it
+// twice was the wrong default.
+func TestSudoDefaultsToTheLoginPassword(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ssha.yaml")
+	body := `version: 1
+hosts:
+  - name: box
+    auth: {type: password, password_env: SSHA_TEST_LOGIN}
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &cfg.Hosts[0]
+
+	if _, err := cfg.SudoPassword(h); !errors.Is(err, ErrNoSudoPassword) {
+		t.Fatalf("an explicit sudo password appeared from nowhere: %v", err)
+	}
+	t.Setenv("SSHA_TEST_LOGIN", "login-pw")
+	got, err := cfg.LoginPassword(h)
+	if err != nil || got != "login-pw" {
+		t.Fatalf("LoginPassword = (%q, %v)", got, err)
+	}
+	if src := cfg.SudoPasswordSource(h); src != "the login password" {
+		t.Fatalf("source = %q", src)
+	}
+
+	// A key-authenticated host has no login password to reuse.
+	h.Auth = Auth{Type: "key", KeyPath: "/tmp/k"}
+	if _, err := cfg.LoginPassword(h); !errors.Is(err, ErrNoSudoPassword) {
+		t.Fatalf("a key host reported a login password: %v", err)
+	}
+}
