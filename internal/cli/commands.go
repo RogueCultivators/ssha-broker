@@ -791,11 +791,21 @@ func renderRunText(res *broker.ExecResult) string {
 		}
 		sb.WriteString(res.Stderr)
 	}
-	if res.Error != "" {
+	// A connection failure is reported through both Error and Stderr; printing
+	// the same sentence twice (and glued together) reads like a crash.
+	if res.Error != "" && res.Error != strings.TrimSpace(res.Stderr) {
+		if sb.Len() > 0 && !strings.HasSuffix(sb.String(), "\n") {
+			sb.WriteString("\n")
+		}
 		fmt.Fprintf(&sb, "ssha: %s\n", res.Error)
 	}
 	if res.Truncated {
 		fmt.Fprintf(&sb, "ssha: output truncated; full output in audit log %s\n", res.AuditID)
+	}
+	// A failed command ends here, and a message without a trailing newline runs
+	// into whatever the shell prints next.
+	if sb.Len() > 0 && !strings.HasSuffix(sb.String(), "\n") {
+		sb.WriteString("\n")
 	}
 	return sb.String()
 }
