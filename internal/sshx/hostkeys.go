@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -34,6 +35,10 @@ var errHostKeyCaptured = errors.New("host key captured")
 // presented during the key exchange that precedes authentication, so a wrong
 // credential still yields the key.
 //
+// When t.Proxy is set the probes are tunnelled through that jump host. The
+// jump-host connection is opened once and shared by every probe, so the
+// bastion logs one login for the whole scan rather than one per algorithm.
+//
 // It scans as the account in t, not as an invented name. sshd records an
 // unknown name as "Invalid user" and an unrecognized login as a failure;
 // fail2ban counts both, and a handful of scans is enough to ban the operator's
@@ -47,13 +52,41 @@ func ScanHostKeys(ctx context.Context, t Target, timeout time.Duration) ([]ssh.P
 	methods, closeAgent := scanAuthMethods(t)
 	defer closeAgent()
 
+	dial := func() (net.Conn, error) {
+		return (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", t.Addr)
+	}
+	if t.Proxy != nil {
+		// A jump host cannot be asked to tunnel anonymously: it takes a real
+		// login, with its own host key checked like any other connection.
+		proxy, err := dialProxy(ctx, *t.Proxy, &net.Dialer{Timeout: timeout})
+		if err != nil {
+			var hint string
+			if strings.Contains(err.Error(), "host key") {
+				name := t.Proxy.Name
+				if name == "" {
+					name = t.Proxy.Addr
+				}
+				hint = fmt.Sprintf("; scan the jump host first: ssha host-key %s --write", name)
+			}
+			return nil, fmt.Errorf("%w%s", err, hint)
+		}
+		defer proxy.Close()
+		dial = func() (net.Conn, error) {
+			conn, err := proxy.Dial("tcp", t.Addr)
+			if err != nil {
+				return nil, fmt.Errorf("dial %s via jump host %s: %w", t.Addr, t.Proxy.Name, err)
+			}
+			return conn, nil
+		}
+	}
+
 	var (
 		out     []ssh.PublicKey
 		seen    = map[string]bool{}
 		lastErr error
 	)
 	for _, alg := range hostKeyAlgorithms {
-		key, err := scanOneHostKey(ctx, t, methods, alg, timeout)
+		key, err := scanOneHostKey(t, methods, alg, timeout, dial)
 		if err != nil {
 			lastErr = err
 			continue
@@ -74,7 +107,7 @@ func ScanHostKeys(ctx context.Context, t Target, timeout time.Duration) ([]ssh.P
 	return out, nil
 }
 
-func scanOneHostKey(ctx context.Context, t Target, methods []ssh.AuthMethod, alg string, timeout time.Duration) (ssh.PublicKey, error) {
+func scanOneHostKey(t Target, methods []ssh.AuthMethod, alg string, timeout time.Duration, dial func() (net.Conn, error)) (ssh.PublicKey, error) {
 	var captured ssh.PublicKey
 	cfg := &ssh.ClientConfig{
 		User:              t.User,
@@ -92,7 +125,7 @@ func scanOneHostKey(ctx context.Context, t Target, methods []ssh.AuthMethod, alg
 		Timeout: timeout,
 	}
 
-	conn, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", t.Addr)
+	conn, err := dial()
 	if err != nil {
 		return nil, err
 	}

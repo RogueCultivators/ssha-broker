@@ -98,6 +98,8 @@ ssha policy check prod-web -- systemctl restart nginx   # 空跑，不执行不�
 ssha run prod-web -- systemctl status nginx
 ssha run prod-web --json -- uname -r
 ssha audit ls --decision denied
+ssha audit ls --failed        # 只看出错的命令
+ssha audit stats --since 7d   # 按主机 / 退出码 / 命令汇总失败
 ssha audit verify             # 校验哈希链
 ssha skill install            # 把 skill 装到 ~/.agents/skills/ssha-agent
 ssha mcp                      # 以 MCP stdio server 启动
@@ -111,6 +113,11 @@ ssha mcp                      # 以 MCP stdio server 启动
 ## 4. 配置
 
 完整带注释的模板由 `ssha init` 生成，见 [`internal/cli/template.yaml`](internal/cli/template.yaml)。
+
+**配置备份。** 任何真正改变文件内容的保存（界面、导入、`host-key --pin`）都会在配置旁边留一份
+`config.yaml.bak-<UTC 时间戳>`，保留最近 10 份；单槽的 `config.yaml.bak` 也仍保留上一次改动前的版本。
+`ssha config backups` 列出，`ssha config restore <name>` 恢复；恢复前的当前文件会先进入备份轮换，
+所以恢复本身也可以撤销。界面「设置 → 配置备份」提供同样的列表和恢复按钮。
 
 ### 4.1 主机 `hosts[]`
 
@@ -238,6 +245,18 @@ ssha: audit verification FAILED after 1 record(s): record #2 (...): hash mismatc
 
 写入用 `flock` + `O_APPEND`，多进程并发追加也不会破坏链。
 
+找问题时不用自己翻 JSON：
+
+```bash
+ssha audit stats --since 7d     # 总数、允许/拒绝、失败数、超时数，按退出码/主机/命令排行
+ssha audit ls --failed          # 只看允许执行但退出码非 0 的记录
+ssha audit ls --exit 127        # 只看某个退出码
+```
+
+`stats` 只把「允许执行且退出码非 0」算作失败；被策略拒绝的命令从未执行，单独按 `denied` 计数。
+ssha 自己追加的排错提示（超时、sudo、引号问题）也会写进审计记录的 `stderr`（需要 `store_output: true`），
+所以 agent 看到的内容和事后复盘看到的一致。
+
 ### 4.4 HTTP MCP 与 token 作用域
 
 ```yaml
@@ -292,7 +311,7 @@ things to look at:
   `--policy-mode readonly` 会附带一份只读白名单（`ls`/`cat`/`journalctl`/`systemctl status`…），
   可以看不能改。
 - **不设 `host_key`**，于是沿用 `~/.ssh/known_hosts`——你现在用 ssh 连过它，那里通常已经有记录了。
-  想钉死在配置里就用 `ssha host-key <alias> --write`，或在界面里点扫描。
+  想钉死在配置里就用 `ssha host-key <alias> --pin`，或在界面里点扫描并保存。
 
 `Host *` 块里的 `User`/`IdentityFile` 会作为默认值继承（OpenSSH 是"取第一个值"，具体块优先）；
 `Host *.internal` 这类模式块无法展开，会跳过并告警。
@@ -307,15 +326,26 @@ ssha 默认 fail-closed，没有 known_hosts 或指纹就不连。同一台机�
 ssha host-key 10.0.0.10            # 扫描并打印指纹 + known_hosts 行
 ssha host-key 10.0.0.10 --write    # 追加进 ~/.ssh/known_hosts（已存在则不重复写）
 ssha host-key prod-web             # 也可以直接传配置里的 host 名
+ssha host-key prod-web --pin       # 把扫描到的指纹写进该主机的 host_key.fingerprints
 ```
 
 `--write` 遇到「同一个主机 + 同一种密钥类型但指纹不同」时会**拒绝写入并告警**——那是中间人
-攻击或服务器重建的典型信号，应该人工核对，而不是自动覆盖。也可以不用 known_hosts，直接在配置里
+攻击或服务器重建的典型信号，应该人工核对，而不是自动覆盖。`--pin` 用同样的规则：一个已钉的指纹都
+对不上时拒绝替换，只有存在交集（服务器仍是原来那台，只是多了/少了算法）才更新指纹列表；
+`host_key.insecure` 开着时拒绝执行。写配置前会自动留备份。也可以不用 known_hosts，直接在配置里
 钉指纹：`host_key: {fingerprints: ["SHA256:xxxx"]}`。扫描完用 `ssha hosts test <name>` 验证。
+
+确实无法事先扫描时（比如临时机器），可以对该主机显式开启 `host_key.accept_new`（TOFU）：
+只有 known_hosts 里**完全没有**这台机器时才接受并记录新密钥；已有不同密钥、或密钥被 `@revoked`
+标记时仍然拒绝。它不会覆盖任何已有的信任记录。界面「高级设置 → 首次连接自动信任」是同一个开关。
 
 扫描以配置里的用户和公钥去连，不编造账号，也不试密码。旧版本用 `ssha-host-key-scan` 这个不存在的
 用户探测，sshd 会记 `Invalid user`，几次就够 fail2ban 把你的出口 IP 一起封掉；现在只会留下正常的
 `Accepted publickey`。传的是地址而不是配置里的主机名时，扫描直接匿名读走密钥，连用户名都不发。
+
+传配置里的主机名时，如果它配了 `proxy_jump`，扫描会自动经过跳板机：到跳板机只登录一次，所有探测
+共用这条连接，跳板机日志里不会出现一串重复登录。跳板机自己的主机密钥照常校验，所以先钉跳板机、
+再钉它后面的机器。界面里的「扫描主机密钥」按钮同样会读取表单里的跳板机字段。
 
 #### 情况 A：有私钥、允许免密登录
 
@@ -495,7 +525,7 @@ WKWebView）。**没有浏览器参与**：不打印 URL，不开端口给外面
 
 - **界面是全中文的**（命令行、skill、MCP 仍然是英文，那是给机器看的）。
 - **主机清单 + 搜索**：按名字或备注搜索，一眼看出哪些主机是 readonly、哪些对模型隐藏了身份、
-  哪些有配置问题（带 ⚠）。
+  哪些经过跳板机（「经 X」）、哪些有配置问题（带 ⚠）。
 - **表单默认只有 SSH 配置 + 备注**：名称、地址、端口、用户名、登录方式、备注。主机密钥、策略覆盖、
   跳板机、标签、遮蔽这些收在「高级设置」折叠区里，不打开就不会看到。
 - **打开界面要管理密码**：第一次设置，之后每次打开都要输入。它只锁这个窗口，不参与 SSH 登录，命令行也不问它。忘记了就删掉 `secrets/ui-auth.json` 再设一次，已经加密的 SSH 密码不受影响。
@@ -505,19 +535,26 @@ WKWebView）。**没有浏览器参与**：不打印 URL，不开端口给外面
 - **配置体检**：打开一台主机就会提示「没有钉主机密钥」「password 没有来源，MCP 会失败」
   「`redact_output` 开了但 `disclosure` 还是 `full`，地址照样会从清单里漏出去」这类问题。
 - **连接自检 + 主机密钥扫描**：点一下就能测连通性并看到协商到的指纹；扫描到的指纹可以一键填进
-  `fingerprints` 钉死，比维护 `known_hosts` 更适合 config-as-code。
+  `fingerprints` 钉死，比维护 `known_hosts` 更适合 config-as-code。扫描同时检查表单里的
+  `known_hosts` 文件：如果那里已经钉了不同的密钥，或者表单里已有的指纹和扫描结果完全对不上，
+  界面会**保留旧值**、标红提示，只有明确点「用扫描结果替换」才会改；「扫描并保存」在冲突时拒绝保存。
+- **跳板机下拉框**：`proxy_jump` 只能从已配置的主机里选，扫描也会经过它。
+- **未保存提醒 + 重新加载配置**：改了表单没保存时保存按钮旁会显示「未保存」，切换主机/新建/重新加载
+  会先确认；在编辑器里改了 YAML 后，点标题栏「重新加载配置」即可让窗口读到磁盘上的新内容，不用重启。
 - **从 `~/.ssh/config` 导入**：列出候选别名（已存在的会标出来）、每条的注意事项、勾选后按指定策略
   一次导入（见 §4.5）。
 - **Git 账号单独一页**（Ctrl+4）：按主机名匹配仓库。https 填用户名和 token，ssh 填私钥路径。密码加密保存，界面不显示原文。force push 默认关闭。
-- **审计日志单独一页**：左边按结果、类型、主机和时间分类，中间按天列出，右边看一条记录的命令和输出。
+- **审计日志单独一页**：左边按结果、类型、主机和时间分类（含「命令失败」），中间按天列出并显示
+  非零退出码，右边看一条记录的命令和输出。
+- **配置备份单独一栏**（设置页）：列出最近的带时间戳备份，一键恢复；恢复前的文件也会先备份。
 - **接入 agent 面板**：一键把 skill 装到 `~/.agents/skills`（或 pi / Claude Code 各自的位置、当前项目），
   显示每个位置「未安装 / 需要更新 / 已安装」；可以下载 `SKILL.md`；还会生成可直接复制的 MCP 配置
   （stdio 用二进制绝对路径，配了 `server.tokens` 就再给一份 HTTP 版）。等价命令是 `ssha skill install`。
 
 **它是怎么改你的文件的**：编辑器按 YAML 节点树改，只动你改过的字段，**手写注释和没碰过的结构
 原样保留**（有单测断言这件事：72 行注释进、72 行注释出），写完会重新加载校验，不合法就整体回滚，
-同时留一份 `ssha.yaml.bak`。代价是编码器会规范化空行和注释对齐，所以第一次编辑后的 diff 可能
-包含少量空白变化。
+同时保留 `ssha.yaml.bak` 和最近 10 份带时间戳的备份。代价是编码器会规范化空行和注释对齐，
+所以第一次编辑后的 diff 可能包含少量空白变化。
 
 **安全**：只监听 loopback（绑非回环地址会直接拒绝启动），每次启动生成一次性 token 并要求
 `X-SSHA-Token` 头，跨站请求（`Sec-Fetch-Site: cross-site`）直接拒。它显示真实地址和未脱敏输出
@@ -740,13 +777,16 @@ ssha hosts find <words...>        # 等同于 list --query
 ssha hosts import [--file PATH] [--policy-mode deny|readonly|allow] [--only GLOB] [--tag T] [--dry-run] [--overwrite]
 ssha hosts show <name>
 ssha hosts test <name>... | --tag T | --all [--probe CMD] [--json]
-ssha host-key <name|addr>[:port] [--port N] [--known-hosts PATH] [--write] [--timeout 10s] [--json]
+ssha host-key <name|addr>[:port] [--port N] [--known-hosts PATH] [--write] [--pin] [--timeout 10s] [--json]
+ssha config backups [--limit N]
+ssha config restore <backup name>
 ssha run <host> [--cwd DIR] [-e K=V] [--timeout 30s] [--max-output N] [--dry-run] [--json] [--] <cmd>
 ssha multi [--host H]... [--tag T]... [--query TEXT] [--concurrency N] [--] <cmd>
 ssha upload <host> <local|-> <remote> [--mode 0644]
 ssha download <host> <remote> <local|-> [--max-bytes N]
 ssha policy check <host> [--] <cmd>
-ssha audit ls [--host H] [--type exec|upload|download|git] [--decision allowed|denied] [--limit N] [--since 1h]
+ssha audit ls [--host H] [--type exec|upload|download|git] [--decision allowed|denied] [--failed] [--exit N] [--limit N] [--since 1h]
+ssha audit stats [--host H] [--type T] [--since 7d]
 ssha audit show <id>
 ssha audit verify
 ssha git accounts

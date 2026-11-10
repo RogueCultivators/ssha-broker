@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -344,7 +345,19 @@ func hostKeyCallback(t Target) (ssh.HostKeyCallback, error) {
 	}
 	p = config.ExpandHome(p)
 	if _, err := os.Stat(p); err != nil {
-		return nil, fmt.Errorf("known_hosts file %s not found: set host_key.known_hosts, host_key.fingerprints, or host_key.insecure", p)
+		if !t.HostKey.AcceptNew {
+			return nil, fmt.Errorf("known_hosts file %s not found: set host_key.known_hosts, host_key.fingerprints, or host_key.insecure", p)
+		}
+		// accept_new is the one setting that has to create the file: there is
+		// nothing to append the first key to otherwise.
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			return nil, fmt.Errorf("create known_hosts directory for %s: %w", p, err)
+		}
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("create known_hosts file %s: %w", p, err)
+		}
+		_ = f.Close()
 	}
 	inner, err := knownhosts.New(p)
 	if err != nil {
@@ -369,6 +382,13 @@ func hostKeyCallback(t Target) (ssh.HostKeyCallback, error) {
 		}
 		got := ssh.FingerprintSHA256(key)
 		if len(ke.Want) == 0 {
+			if t.HostKey.AcceptNew {
+				if err := appendKnownHost(p, hostname, key); err != nil {
+					return fmt.Errorf("unknown host key for %s (%s %s); accepting it failed: %w",
+						hostname, key.Type(), got, err)
+				}
+				return nil
+			}
 			return fmt.Errorf("unknown host key for %s (%s %s); add it to %s or set host_key.fingerprints",
 				hostname, key.Type(), got, p)
 		}
@@ -519,7 +539,10 @@ func (c *Client) Run(ctx context.Context, command string, opts RunOptions) (*Run
 		killSession(sess)
 		<-done
 		res.ExitCode = -1
-		_, _ = io.WriteString(stderr, fmt.Sprintf("\n[ssha] command exceeded timeout %s and was killed\n", timeout))
+		_, _ = io.WriteString(stderr, fmt.Sprintf("\n[ssha] command exceeded timeout %s and was killed. "+
+			"That ceiling comes from this host's policy (or the global default); raise it for this host "+
+			"in 高级设置 → 超时, or pass a shorter --timeout. A longer `timeout N` inside the command "+
+			"cannot buy more time.\n", timeout))
 		res.Stdout = stdout.String()
 		res.Stderr = stderr.String()
 		res.Bytes = stdout.Bytes() + stderr.Bytes()

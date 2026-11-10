@@ -336,9 +336,11 @@ func writeDocument(path string, doc *yaml.Node) error {
 		return fmt.Errorf("rejected: %w", err)
 	}
 
-	// Keep one backup of the last known-good file for the operator.
-	if readErr == nil {
-		_ = os.WriteFile(path+".bak", original, mode)
+	// Keep the last known-good file for the operator. Nothing is written when a
+	// save changes nothing: backups are for "what did it look like before", and
+	// a run of identical saves would otherwise push the useful copy out.
+	if readErr == nil && !bytes.Equal(original, out) {
+		rotateBackup(path, original, mode)
 	}
 	return nil
 }

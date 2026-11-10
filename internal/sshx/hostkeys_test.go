@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/pem"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 // offers. It is enough to prove which account a scan authenticates as.
 type scanServer struct {
 	addr  string
+	key   ssh.PublicKey
 	users []string
 	mu    sync.Mutex
 }
@@ -48,7 +50,7 @@ func startScanServer(t *testing.T) *scanServer {
 		t.Fatal(err)
 	}
 
-	srv := &scanServer{}
+	srv := &scanServer{key: signer.PublicKey()}
 	cfg := &ssh.ServerConfig{
 		PublicKeyCallback: func(conn ssh.ConnMetadata, _ ssh.PublicKey) (*ssh.Permissions, error) {
 			srv.add(conn.User())
@@ -129,6 +131,145 @@ func TestScanHostKeysUsesTheConfiguredUser(t *testing.T) {
 		if u != "deploy" {
 			t.Fatalf("scan authenticated as %q, want the configured user deploy", u)
 		}
+	}
+}
+
+// jumpServer is a throwaway SSH server that forwards direct-tcpip channels,
+// enough to stand in for a bastion in a scan test. Every tunnel is dialled to
+// forward, so the requested destination only has to be a name the client
+// itself cannot reach.
+type jumpServer struct {
+	addr     string
+	forward  string
+	mu       sync.Mutex
+	channels int
+}
+
+func (s *jumpServer) opened() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.channels
+}
+
+func startJumpServer(t *testing.T, forward string) *jumpServer {
+	t.Helper()
+	_, hostKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(hostKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &ssh.ServerConfig{
+		NoClientAuth: true,
+		PublicKeyCallback: func(ssh.ConnMetadata, ssh.PublicKey) (*ssh.Permissions, error) {
+			return nil, nil
+		},
+	}
+	cfg.AddHostKey(signer)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	srv := &jumpServer{addr: ln.Addr().String(), forward: forward}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go serveJumpConn(conn, cfg, srv)
+		}
+	}()
+	return srv
+}
+
+func serveJumpConn(conn net.Conn, cfg *ssh.ServerConfig, srv *jumpServer) {
+	defer conn.Close()
+	sc, chans, reqs, err := ssh.NewServerConn(conn, cfg)
+	if err != nil {
+		return
+	}
+	defer sc.Close()
+	go ssh.DiscardRequests(reqs)
+
+	for ch := range chans {
+		if ch.ChannelType() != "direct-tcpip" {
+			_ = ch.Reject(ssh.UnknownChannelType, "only direct-tcpip is supported")
+			continue
+		}
+		var p struct {
+			DestAddr   string
+			DestPort   uint32
+			OriginAddr string
+			OriginPort uint32
+		}
+		if err := ssh.Unmarshal(ch.ExtraData(), &p); err != nil {
+			_ = ch.Reject(ssh.ConnectionFailed, "bad direct-tcpip payload")
+			continue
+		}
+		srv.mu.Lock()
+		srv.channels++
+		srv.mu.Unlock()
+		dest, err := net.Dial("tcp", srv.forward)
+		if err != nil {
+			_ = ch.Reject(ssh.ConnectionFailed, err.Error())
+			continue
+		}
+		c, chReqs, err := ch.Accept()
+		if err != nil {
+			_ = dest.Close()
+			continue
+		}
+		go ssh.DiscardRequests(chReqs)
+		go func() {
+			defer dest.Close()
+			_, _ = io.Copy(dest, c)
+			_ = c.Close()
+		}()
+		go func() {
+			defer c.Close()
+			_, _ = io.Copy(c, dest)
+		}()
+	}
+}
+
+func TestScanHostKeysThroughJumpHost(t *testing.T) {
+	srv := startScanServer(t)
+	jump := startJumpServer(t, srv.addr)
+	keyEnv := writeKeyEnv(t)
+
+	// .invalid never resolves, so the scan can only succeed through the tunnel.
+	target := Target{
+		Addr: "target.invalid:22",
+		User: "deploy",
+		Auth: config.Auth{Type: "key", KeyEnv: keyEnv},
+		Proxy: &Target{
+			Name:    "bastion",
+			Addr:    jump.addr,
+			User:    "jump",
+			Auth:    config.Auth{Type: "key", KeyEnv: keyEnv},
+			HostKey: config.HostKey{Insecure: true},
+		},
+	}
+
+	keys, err := ScanHostKeys(context.Background(), target, 5*time.Second)
+	if err != nil {
+		t.Fatalf("ScanHostKeys via jump host: %v", err)
+	}
+	if len(keys) == 0 {
+		t.Fatal("no host keys returned")
+	}
+	if got, want := ssh.FingerprintSHA256(keys[0]), ssh.FingerprintSHA256(srv.key); got != want {
+		t.Fatalf("scanned key %s, want the target server's key %s", got, want)
+	}
+	if n := jump.opened(); n == 0 {
+		t.Fatal("the scan never opened a direct-tcpip channel on the jump host")
 	}
 }
 

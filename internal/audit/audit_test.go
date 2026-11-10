@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func tempLog(t *testing.T) (*Logger, string) {
@@ -99,6 +100,60 @@ func TestVerifyDetectsTampering(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("verified %d records before the failure, want 1", n)
+	}
+}
+
+// TestAppendSanitizesInvalidUTF8 covers binary command output: the JSON
+// encoding round trip it has to survive is not an identity for invalid UTF-8.
+func TestAppendSanitizesInvalidUTF8(t *testing.T) {
+	l, path := tempLog(t)
+	r := &Record{
+		Type: TypeExec, Host: "web-1", Command: "grep -a token image",
+		Decision: DecisionAllowed, Stdout: "before\xffafter",
+	}
+	if err := l.Append(r); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if !utf8.ValidString(r.Stdout) {
+		t.Fatalf("Stdout is still invalid UTF-8: %q", r.Stdout)
+	}
+	n, err := Verify(path)
+	if err != nil {
+		t.Fatalf("Verify after binary output: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("verified %d records, want 1", n)
+	}
+}
+
+// TestVerifyAcceptsLegacyInvalidUTF8 reproduces a record hashed by a writer
+// that predates sanitizeRecord: the hash covers the escaped form, the line on
+// disk holds the same bytes, and Verify must still accept it.
+func TestVerifyAcceptsLegacyInvalidUTF8(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	r := Record{
+		ID:        "20261014T093712.301531745Z-ce7cff5cd7",
+		Time:      time.Date(2026, 10, 14, 9, 37, 12, 0, time.UTC),
+		SessionID: "ssha-1", Seq: 1,
+		Type: TypeExec, Host: "web-1", Command: "grep -a token image",
+		Decision: DecisionAllowed, Stdout: "before\xffafter",
+	}
+	// The old writer's hash: Marshal escapes the invalid byte as U+FFFD.
+	r.Hash = hashRecord(r, "")
+	line, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(line, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := Verify(path)
+	if err != nil {
+		t.Fatalf("Verify on a legacy binary-output record: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("verified %d records, want 1", n)
 	}
 }
 

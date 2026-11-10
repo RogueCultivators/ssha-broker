@@ -143,6 +143,7 @@ hosts:
 #   host_key:                             # 主机密钥校验，默认 fail-closed
 #     known_hosts: ~/.ssh/known_hosts     # 不给就用 ~/.ssh/known_hosts
 #     fingerprints: ["SHA256:..."]        # 或者直接钉指纹
+#     accept_new: true                    # 首次连接自动信任并记入 known_hosts（TOFU）；已有不同密钥仍拒绝
 #     insecure: true                      # 关掉校验，仅测试
 #
 #   policy:                               # 单台覆盖全局策略

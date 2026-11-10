@@ -257,6 +257,10 @@ type HostKey struct {
 	KnownHosts string `yaml:"known_hosts,omitempty" json:"known_hosts,omitempty"`
 	// Fingerprints accepts specific SHA256 fingerprints (e.g. "SHA256:abc...").
 	Fingerprints []string `yaml:"fingerprints,omitempty" json:"fingerprints,omitempty"`
+	// AcceptNew trusts a key that the known_hosts file does not know yet and
+	// appends it, like OpenSSH's StrictHostKeyChecking=accept-new. A key that is
+	// already on file and differs is still refused, and so is a revoked one.
+	AcceptNew bool `yaml:"accept_new,omitempty" json:"accept_new,omitempty"`
 	// Insecure disables host key verification. Never use in production.
 	Insecure bool `yaml:"insecure,omitempty" json:"insecure,omitempty"`
 }

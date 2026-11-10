@@ -8,6 +8,10 @@
 # Local configuration and secrets - never commit these
 ssha.yaml
 ssha.yml
+ssha.yaml.bak
+ssha.yaml.bak-*
+ssha.yml.bak
+ssha.yml.bak-*
 *.age
 *.pem
 .env

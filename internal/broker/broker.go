@@ -391,7 +391,7 @@ func (b *Broker) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
 	maxBytes := clampInt(req.MaxOutputBytes, spec.MaxOutputBytes)
 	env := mergeEnv(h.Env, req.Env)
 
-	target, err := b.resolveTarget(h)
+	target, err := b.ResolveTarget(h)
 	if err != nil {
 		return nil, err
 	}
@@ -473,10 +473,56 @@ func (b *Broker) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
 				h.Name, config.SecretPath(b.cfg.Path(), h.Name, config.SecretSudo))
 		}
 	}
+	if hint := shellQuotingHint(req.Command, res.ExitCode, res.Stderr); hint != "" {
+		res.Stderr += "\n[ssha] " + hint + "\n"
+	}
+	// Capture after every hint has been appended: the audit record is the
+	// operator's copy of what the agent saw, so it includes ssha's own
+	// explanation, not only what the remote program printed.
+	if b.storeOutput {
+		rec.Stdout = truncate(res.Stdout, b.maxFieldBytes)
+		rec.Stderr = truncate(res.Stderr, b.maxFieldBytes)
+	}
 	rec.ID = b.record(rec)
 	res.AuditID = rec.ID
 
 	return b.redactExec(res), b.redactErr(h.Name, runErr)
+}
+
+// shellQuotingHint names the mistake behind the failures it can recognise: an
+// unquoted {{...}} template is expanded by the remote shell before the program
+// sees it. It stays quiet for every other failure, because a wrong guess at
+// why a command failed is worse than no hint.
+func shellQuotingHint(command string, exitCode int, stderr string) string {
+	if (exitCode != 127 && exitCode != 64) || !unquotedTemplate(command) {
+		return ""
+	}
+	if exitCode == 127 && !strings.Contains(stderr, "command not found") {
+		return ""
+	}
+	return "the remote shell expanded {{...}} before the program saw it; quote the whole argument, " +
+		"for example --format '{{.Names}}'"
+}
+
+// unquotedTemplate reports whether the shell would have seen a {{...}} outside
+// any quoting. A quoted template is passed through untouched, so a failure
+// there has a different cause and the hint would be wrong.
+func unquotedTemplate(command string) bool {
+	var quote byte
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		switch {
+		case quote == 0 && (c == '\'' || c == '"'):
+			quote = c
+		case quote != 0 && c == quote:
+			quote = 0
+		case quote == 0 && c == '\\':
+			i++ // skip the escaped byte
+		case quote == 0 && c == '{' && i+1 < len(command) && command[i+1] == '{':
+			return true
+		}
+	}
+	return false
 }
 
 // MultiExecRequest fans a command out over several hosts.
@@ -590,7 +636,7 @@ func (b *Broker) Upload(ctx context.Context, req UploadRequest) (*TransferResult
 		return res, &DeniedError{Host: h.Name, Reason: decision.Reason}
 	}
 
-	target, err := b.resolveTarget(h)
+	target, err := b.ResolveTarget(h)
 	if err != nil {
 		return nil, err
 	}
@@ -660,7 +706,7 @@ func (b *Broker) Download(ctx context.Context, req DownloadRequest) (*TransferRe
 	if maxBytes <= 0 {
 		maxBytes = 1 << 20
 	}
-	target, err := b.resolveTarget(h)
+	target, err := b.ResolveTarget(h)
 	if err != nil {
 		return nil, err
 	}
@@ -745,7 +791,9 @@ func (b *Broker) record(r *audit.Record) string {
 	return r.ID
 }
 
-func (b *Broker) resolveTarget(h *config.Host) (sshx.Target, error) {
+// ResolveTarget turns a configured host into a connection target, following
+// proxy_jump one hop to its jump host.
+func (b *Broker) ResolveTarget(h *config.Host) (sshx.Target, error) {
 	t := sshx.Target{
 		Name:    h.Name,
 		Addr:    h.AddrPort(),
@@ -938,7 +986,7 @@ func (b *Broker) Test(ctx context.Context, name, probe string) *HostTest {
 	}
 	defer func() { res.Error = b.redact(name, res.Error) }()
 
-	target, err := b.resolveTarget(h)
+	target, err := b.ResolveTarget(h)
 	if err != nil {
 		res.Error = err.Error()
 		return res

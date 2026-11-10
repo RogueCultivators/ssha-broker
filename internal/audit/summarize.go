@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -17,10 +18,14 @@ type Summary struct {
 	Decision map[string]int `json:"decision"`
 	Type     map[string]int `json:"type"`
 	Host     map[string]int `json:"host"`
-	Today    int            `json:"today"`
-	Last24h  int            `json:"last_24h"`
-	Last7d   int            `json:"last_7d"`
-	Last30d  int            `json:"last_30d"`
+	// Failed counts allowed commands that returned non-zero. Denied commands
+	// never ran, so they are not failures.
+	Failed   int `json:"failed"`
+	Timeouts int `json:"timeouts"`
+	Today    int `json:"today"`
+	Last24h  int `json:"last_24h"`
+	Last7d   int `json:"last_7d"`
+	Last30d  int `json:"last_30d"`
 }
 
 type summaryLine struct {
@@ -28,6 +33,8 @@ type summaryLine struct {
 	Type     string    `json:"type"`
 	Host     string    `json:"host"`
 	Decision string    `json:"decision"`
+	ExitCode int       `json:"exit_code"`
+	Reason   string    `json:"reason"`
 }
 
 // Summarize counts the log. now is the clock for the rolling windows. today
@@ -72,6 +79,12 @@ func Summarize(path string, now, today time.Time) (Summary, error) {
 		}
 		if r.Host != "" {
 			out.Host[r.Host]++
+		}
+		if r.Decision == DecisionAllowed && r.ExitCode != 0 {
+			out.Failed++
+			if strings.Contains(r.Reason, "exceeded timeout") {
+				out.Timeouts++
+			}
 		}
 		if !today.IsZero() && !r.Time.Before(today) {
 			out.Today++

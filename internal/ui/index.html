@@ -308,6 +308,7 @@
   <h1>ssha</h1>
   <span class="path" id="cfgpath"></span>
   <span class="status" id="status"></span>
+  <button type="button" id="reload" title="重新读取磁盘上的配置文件；未保存的修改会丢失">重新加载配置</button>
   <button type="button" id="lock-now" hidden>锁定</button>
 </header>
 
@@ -574,12 +575,17 @@
           </div>
           <div class="row" style="margin-top:8px">
             <button type="button" id="scan">扫描主机密钥</button>
+            <button type="button" id="scan-save">扫描并保存</button>
+            <button type="button" id="scan-replace" hidden>用扫描结果替换</button>
           </div>
           <div class="result" id="scan-out"></div>
           <div class="check" style="margin-top:8px">
+            <input type="checkbox" id="f-accept_new"><label for="f-accept_new">首次连接自动信任并记录（accept_new / TOFU）</label>
+          </div>
+          <div class="check" style="margin-top:8px">
             <input type="checkbox" id="f-insecure"><label for="f-insecure">不校验主机密钥（仅测试用）</label>
           </div>
-          <p class="hint">留空则用 <code>~/.ssh/known_hosts</code>；查不到就拒绝连接。</p>
+          <p class="hint">留空则用 <code>~/.ssh/known_hosts</code>；查不到就拒绝连接。扫描会同时检查这个文件里已钉的密钥，冲突时保留旧值并要求确认。accept_new 只影响“还没记录过”的主机，密钥变了仍然拒绝。</p>
         </fieldset>
 
         <fieldset>
@@ -645,8 +651,9 @@
           <legend>其他</legend>
           <div class="grid">
             <div>
-              <label for="f-proxy_jump">通过跳板机（写另一台主机的名称）</label>
-              <input id="f-proxy_jump" placeholder="bastion">
+              <label for="f-proxy_jump">通过跳板机</label>
+              <select id="f-proxy_jump"></select>
+              <p class="hint" style="margin-top:6px">可选的主机就是配置里已有的机器。扫描主机密钥也会经过这里选的跳板机。</p>
             </div>
             <div>
               <label for="f-work_dir">默认工作目录</label>
@@ -665,6 +672,7 @@
 
       <div class="actions">
         <button type="submit" class="primary" id="save">保存</button>
+        <span class="badge" id="dirty" hidden style="color:var(--warn);border-color:var(--warn)">未保存</span>
         <button type="button" id="test">测试连接</button>
         <button type="button" id="revert">撤销修改</button>
         <button type="button" class="danger" id="del" style="margin-left:auto">删除主机</button>
@@ -926,6 +934,16 @@
       </fieldset>
 
       <fieldset>
+        <legend>配置备份</legend>
+        <p class="hint" style="margin-top:0">每次保存只要改动了文件，就会在配置旁边留一份带时间戳的副本，保留最近 10 份。恢复前，当前文件也会先备份，所以恢复本身也可以撤销。</p>
+        <div id="s-backups" class="result" style="max-height:170px;overflow:auto"></div>
+        <div class="row" style="margin-top:8px">
+          <button type="button" id="s-backup-refresh">刷新备份列表</button>
+        </div>
+        <div class="result" id="s-backup-result"></div>
+      </fieldset>
+
+      <fieldset>
         <legend>这个程序</legend>
         <div class="grid">
           <div>
@@ -961,6 +979,7 @@ const SESSION_KEY = "ssha-session";
 let SESSION = sessionStorage.getItem(SESSION_KEY) || "";
 
 let state = null, hosts = [], selected = null, filter = "";
+let dirty = false, pendingScan = [];
 
 async function api(path, opts = {}) {
   const headers = { "X-SSHA-Token": TOKEN, "Content-Type": "application/json", ...(opts.headers || {}) };
@@ -1111,9 +1130,10 @@ function renderList() {
     const mode = h.effective_mode || "allow";
     const hidden = h.effective_policy && h.effective_policy.disclosure && h.effective_policy.disclosure !== "full";
     const warn = (h.warnings || []).length ? ' <span class="badge" style="color:var(--warn);border-color:var(--warn)">!</span>' : "";
+    const jump = h.proxy_jump ? ` <span class="badge" title="通过 ${esc(h.proxy_jump)} 连接">经 ${esc(h.proxy_jump)}</span>` : "";
     const note = oneLine(h.description) || [h.user, h.addr].filter(Boolean).join("@");
     return `<li class="${h.name === selected ? "sel" : ""}" data-name="${esc(h.name)}">
-      <div class="name">${esc(h.name)} <span class="badge ${esc(mode)}">${esc(modeLabel(mode))}</span>${hidden ? ' <span class="badge hidden">隐藏身份</span>' : ""}${warn}</div>
+      <div class="name">${esc(h.name)} <span class="badge ${esc(mode)}">${esc(modeLabel(mode))}</span>${hidden ? ' <span class="badge hidden">隐藏身份</span>' : ""}${jump}${warn}</div>
       <div class="note">${esc(note)}</div>
     </li>`;
   }).join("") || `<li class="empty">没有匹配的主机</li>`;
@@ -1122,15 +1142,58 @@ function renderList() {
 $("list").addEventListener("click", (e) => {
   const li = e.target.closest("li[data-name]");
   if (!li) return;
+  if (!confirmDiscard()) return;
   selected = li.dataset.name;
   renderList();
   loadHost();
 });
 $("search").addEventListener("input", (e) => { filter = e.target.value; renderList(); });
 
+// The broker reads the config at startup and after its own saves. Without this
+// button an edit made in $EDITOR stays invisible until the window restarts.
+$("reload").addEventListener("click", async () => {
+  if (!confirmDiscard()) return;
+  $("reload").disabled = true;
+  try {
+    await api("/api/reload", { method: "POST" });
+    await refresh();
+    setStatus(`已重新读取配置 · ${hosts.length} 台主机`);
+  } catch (err) {
+    setStatus("重新加载失败：" + String(err.message || err), true);
+  } finally {
+    $("reload").disabled = false;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // 表单
 // ---------------------------------------------------------------------------
+
+// fillProxyOptions offers every configured host as a jump host, minus the one
+// being edited. A value that is no longer configured (or points at itself) is
+// kept as an option, so opening and saving a host never silently drops it.
+function fillProxyOptions(current) {
+  const sel = $("f-proxy_jump");
+  const names = hosts.map((h) => h.name).filter((n) => n && n !== selected);
+  if (current && !names.includes(current)) names.unshift(current);
+  sel.innerHTML = '<option value="">不使用</option>' +
+    names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+  sel.value = current || "";
+}
+
+// dirty tracks edits to this form only, so switching hosts, reloading the
+// config or picking another host cannot throw away typing without asking.
+function setDirty(on) {
+  dirty = on;
+  $("dirty").hidden = !on;
+}
+
+function confirmDiscard() {
+  return !dirty || confirm("当前主机有未保存的修改，放弃这些修改？");
+}
+
+$("form").addEventListener("input", () => setDirty(true));
+$("form").addEventListener("change", () => setDirty(true));
 
 function loadHost() {
   const h = hosts.find((x) => x.name === selected);
@@ -1142,7 +1205,7 @@ function loadHost() {
   v("f-description", h.description);
   v("f-tags", (h.tags || []).join(", "));
   $("f-disabled").checked = !!h.disabled;
-  v("f-proxy_jump", h.proxy_jump);
+  fillProxyOptions(h.proxy_jump || "");
   v("f-work_dir", h.work_dir);
 
   v("f-auth-type", h.auth?.type || "key");
@@ -1152,6 +1215,7 @@ function loadHost() {
 
   v("f-known_hosts", h.host_key?.known_hosts);
   v("f-fingerprints", (h.host_key?.fingerprints || []).join("\n"));
+  $("f-accept_new").checked = !!h.host_key?.accept_new;
   $("f-insecure").checked = !!h.host_key?.insecure;
 
   const p = h.policy;
@@ -1176,7 +1240,10 @@ function loadHost() {
   syncAuthFields();
   syncPolicyFields();
   $("scan-out").textContent = "";
+  $("scan-replace").hidden = true;
+  pendingScan = [];
   $("result").textContent = "";
+  setDirty(false);
 }
 
 // renderSecretState says where a secret comes from, never what it is.
@@ -1261,9 +1328,11 @@ function collect() {
   const hk = h.host_key;
   hk.known_hosts = val("f-known_hosts");
   hk.fingerprints = lines($("f-fingerprints").value);
+  hk.accept_new = $("f-accept_new").checked;
   hk.insecure = $("f-insecure").checked;
   if (!hk.known_hosts) delete hk.known_hosts;
   if (!hk.fingerprints.length) delete hk.fingerprints;
+  if (!hk.accept_new) delete hk.accept_new;
   if (!hk.insecure) delete hk.insecure;
 
   if ($("f-override").checked) {
@@ -1360,21 +1429,108 @@ $("test").addEventListener("click", async () => {
   } catch (err) { showResult(String(err.message || err), true); }
 });
 
-$("scan").addEventListener("click", async () => {
+// scanHostKeys scans and decides what to do with the result. It returns
+// {conflict, scanned} so "扫描并保存" can refuse to save a changed identity.
+async function scanHostKeys() {
   const addr = $("f-addr").value.trim() || $("f-name").value.trim();
   const port = parseInt($("f-port").value, 10) || 22;
-  if (!addr) { showResult("先填地址", true); return; }
+  if (!addr) { showResult("先填地址", true); return null; }
+
   $("scan-out").textContent = "扫描中…";
+  $("scan").disabled = true;
+  $("scan-save").disabled = true;
   try {
-    const r = await api("/api/hostkey", { method: "POST", body: JSON.stringify({ addr, port, user: $("f-user").value.trim() }) });
+    const r = await api("/api/hostkey", {
+      method: "POST",
+      body: JSON.stringify({
+        addr, port,
+        user: $("f-user").value.trim(),
+        proxy_jump: $("f-proxy_jump").value.trim(),
+        known_hosts: $("f-known_hosts").value.trim(),
+      }),
+    });
+    const scanned = r.keys.map((k) => k.fingerprint);
+    const conflicts = r.warnings || [];
+    pendingScan = scanned;
+
+    const current = lines($("f-fingerprints").value);
+    const scanSet = new Set(scanned);
+    const curSet = new Set(current);
+    const same = current.length === scanned.length && current.every((fp) => scanSet.has(fp));
+    const overlap = current.filter((fp) => scanSet.has(fp));
+
     $("scan-out").textContent = r.keys.map((k) => `${k.type.padEnd(22)} ${k.fingerprint}`).join("\n")
-      + "\n\nknown_hosts 行：\n" + r.keys.map((k) => "  " + k.line).join("\n");
-    $("f-fingerprints").value = r.keys.map((k) => k.fingerprint).join("\n");
-    showResult("已扫描，指纹已填入上方，保存后生效", false);
+      + "\n\nknown_hosts 行：\n" + r.keys.map((k) => "  " + k.line).join("\n")
+      + (conflicts.length ? "\n\n⚠ known_hosts 里已有不同的密钥：\n" + conflicts.map((w) => "  " + w).join("\n") : "");
+    $("scan-replace").hidden = true;
+
+    if (same) {
+      showResult(conflicts.length
+        ? "扫描结果和已钉的指纹一致；known_hosts 里另有旧密钥，已被钉死的指纹覆盖"
+        : "扫描结果和已钉的指纹一致", false);
+      return { conflict: false, scanned };
+    }
+    if (current.length === 0 && conflicts.length > 0) {
+      // No pin exists and the file already trusts something else. Filling this
+      // in would overrule the existing trust anchor without saying so.
+      $("scan-replace").hidden = false;
+      showResult("known_hosts 里已钉的密钥和服务器不一致：没有自动填入，确认服务器确实换过密钥后再替换", true);
+      return { conflict: true, scanned };
+    }
+    if (current.length === 0) {
+      $("f-fingerprints").value = scanned.join("\n");
+      setDirty(true);
+      showResult("已扫描，指纹已填入，保存后生效", false);
+      return { conflict: false, scanned };
+    }
+    if (overlap.length === 0) {
+      // Every old pin contradicts the server. Keep them and make the operator
+      // say "replace" explicitly, the same rule as `host-key --write`.
+      $("scan-replace").hidden = false;
+      $("scan-out").textContent += "\n\n⚠ 表单里已钉的指纹和扫描结果完全对不上，已保留旧值。";
+      showResult("扫描结果和已钉的指纹不一致：已保留原来的指纹，确认服务器确实换过密钥后再替换", true);
+      return { conflict: true, scanned };
+    }
+    // Same server, new algorithms or a retired one: keep what was pinned that
+    // the scan did not see, add what it did.
+    const merged = current.slice();
+    for (const fp of scanned) if (!curSet.has(fp)) merged.push(fp);
+    $("f-fingerprints").value = merged.join("\n");
+    setDirty(true);
+    showResult("已扫描，新增了 " + (merged.length - current.length) + " 个指纹，保存后生效", false);
+    return { conflict: false, scanned };
+  } finally {
+    $("scan").disabled = false;
+    $("scan-save").disabled = false;
+  }
+}
+
+$("scan").addEventListener("click", async () => {
+  try {
+    await scanHostKeys();
   } catch (err) {
     $("scan-out").textContent = "";
     showResult("扫描失败：" + String(err.message || err), true);
   }
+});
+
+$("scan-save").addEventListener("click", async () => {
+  try {
+    const r = await scanHostKeys();
+    if (!r || r.conflict) return;
+    $("form").requestSubmit();
+  } catch (err) {
+    $("scan-out").textContent = "";
+    showResult("扫描失败：" + String(err.message || err), true);
+  }
+});
+
+$("scan-replace").addEventListener("click", () => {
+  if (!pendingScan.length) return;
+  $("f-fingerprints").value = pendingScan.join("\n");
+  $("scan-replace").hidden = true;
+  setDirty(true);
+  showResult("已换成扫描结果，保存后生效", false);
 });
 
 // ---------------------------------------------------------------------------
@@ -1615,6 +1771,7 @@ function renderAuditNav() {
     { title: "结果", items: [
       { kind: "decision", value: "allowed", label: "已允许", n: decision.allowed || 0 },
       { kind: "decision", value: "denied", label: "已拒绝", n: decision.denied || 0, warn: true },
+      { kind: "failed", value: "1", label: "命令失败", n: s.failed || 0, warn: true },
     ]},
     { title: "类型", items: [
       { kind: "type", value: "exec", label: "执行命令", n: type.exec || 0 },
@@ -1644,6 +1801,7 @@ function auditQuery() {
   if (auditCat.kind === "decision" || auditCat.kind === "type" || auditCat.kind === "host") {
     params.set(auditCat.kind, auditCat.value);
   }
+  if (auditCat.kind === "failed") params.set("failed", "1");
   if (auditCat.kind === "time") {
     params.set("since", auditCat.value === "today" ? todayISO() : auditCat.value);
   }
@@ -1670,6 +1828,7 @@ function renderAuditList(records, meta) {
     }
     const what = x.command || x.path || typeLabel(x.type);
     const extra = [decisionLabel(x.decision), typeLabel(x.type)];
+    if (x.exit_code) extra.push("exit " + x.exit_code);
     if (x.duration_ms) extra.push(x.duration_ms + " ms");
     html += `<div class="audit-row${x.id === auditSelected ? " active" : ""}${x.decision === "denied" ? " is-denied" : ""}" role="button" tabindex="0" data-id="${esc(x.id)}">
       <span class="audit-time">${esc(timeHM(x.time))}</span>
@@ -1865,7 +2024,53 @@ function loadSettings() {
     : "";
   $("s-result").textContent = "";
   $("s-result").className = "result";
+  loadBackups();
 }
+
+async function loadBackups() {
+  const box = $("s-backups");
+  box.className = "result";
+  box.textContent = "读取备份…";
+  try {
+    const r = await api("/api/config/backups");
+    const list = r.backups || [];
+    if (!list.length) {
+      box.textContent = "还没有备份。改动并保存一次配置后，这里会出现第一份。";
+      return;
+    }
+    box.innerHTML = list.map((b) => `
+      <div class="row" style="justify-content:space-between; margin-bottom:5px">
+        <span style="font-family:var(--mono); font-size:var(--fs-xs)">${esc(b.name)}</span>
+        <span class="hint" style="margin:0">${esc(new Date(b.mod_time).toLocaleString())} · ${b.size} B</span>
+        <button type="button" data-restore="${esc(b.name)}">恢复</button>
+      </div>`).join("");
+  } catch (err) {
+    box.className = "result bad";
+    box.textContent = "读取失败：" + String(err.message || err);
+  }
+}
+
+$("s-backup-refresh").addEventListener("click", loadBackups);
+$("s-backups").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-restore]");
+  if (!btn) return;
+  const name = btn.dataset.restore;
+  if (!confirm(`用备份 ${name} 替换当前配置？\n当前文件会先备份，所以还能再恢复回来。`)) return;
+  btn.disabled = true;
+  try {
+    const r = await api("/api/config/restore", { method: "POST", body: JSON.stringify({ name }) });
+    await refresh();
+    loadSettings();
+    await loadBackups();
+    $("s-backup-result").className = "result ok";
+    $("s-backup-result").textContent = "已恢复 " + name
+      + (r.previous_saved_as ? "；恢复前的文件保存在 " + r.previous_saved_as : "");
+  } catch (err) {
+    $("s-backup-result").className = "result bad";
+    $("s-backup-result").textContent = "恢复失败：" + String(err.message || err);
+    btn.disabled = false;
+  }
+});
 
 $("s-save").addEventListener("click", async () => {
   const payload = {
@@ -2097,6 +2302,7 @@ async function refresh() {
 }
 
 $("new").addEventListener("click", () => {
+  if (!confirmDiscard()) return;
   selected = null;
   renderList();
   showPanel("form");
@@ -2105,8 +2311,10 @@ $("new").addEventListener("click", () => {
    "f-key_path", "f-key_env", "f-passphrase_env", "f-passphrase_file", "f-password", "f-passphrase",
    "f-password_env", "f-password_file", "f-known_hosts", "f-fingerprints",
    "f-timeout", "f-max", "f-allow", "f-deny", "f-deny_paths", "f-redact_patterns",
-   "f-proxy_jump", "f-work_dir"].forEach((id) => v(id, ""));
+   "f-work_dir"].forEach((id) => v(id, ""));
+  fillProxyOptions("");
   $("f-disabled").checked = false;
+  $("f-accept_new").checked = false;
   $("f-insecure").checked = false;
   $("f-auth-type").value = "key";
   $("f-override").checked = false;
@@ -2118,7 +2326,10 @@ $("new").addEventListener("click", () => {
   renderWarnings([]);
   syncAuthFields(); syncPolicyFields();
   $("scan-out").textContent = "";
+  $("scan-replace").hidden = true;
+  pendingScan = [];
   $("result").textContent = "";
+  setDirty(false);
   $("f-name").focus();
 });
 

@@ -35,6 +35,8 @@ Commands:
   hosts test <name>...     verify host key, credentials and command execution
   hosts import [file]      read hosts from an ssh_config file
   host-key <host|addr>     fetch a host's public keys (onboarding aid)
+  config backups           list timestamped config backups
+  config restore <name>    restore one, keeping the current file as a backup
   run <host> [--] <cmd>    run a command on one host
   multi [--tag T] <cmd>    run a command on several hosts in parallel
   multi -q <words> <cmd>   ...on every host matching a search
@@ -42,6 +44,7 @@ Commands:
   download <host> <src> <dst> download a file (dst "-" writes stdout)
   policy check <host> <cmd>   evaluate policy without executing
   audit ls                 list recent audit records
+  audit stats              summarize failures, denials and timeouts
   audit show <id>          show one audit record
   audit verify             verify the audit hash chain
   git accounts             list git accounts (no secrets)
@@ -149,6 +152,8 @@ func run(args []string, version string, stdout, stderr io.Writer) int {
 		return a.cmdHosts(sub)
 	case "host-key", "hostkey":
 		return a.cmdHostKey(sub)
+	case "config":
+		return a.cmdConfig(sub)
 	case "run":
 		return a.cmdRun(sub)
 	case "multi":

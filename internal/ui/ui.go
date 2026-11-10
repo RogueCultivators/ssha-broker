@@ -121,6 +121,9 @@ func (s *Server) routes() {
 	mux.Handle("/api/audit/summary", s.auth(http.HandlerFunc(s.handleAuditSummary)))
 	mux.Handle("/api/audit/verify", s.auth(http.HandlerFunc(s.handleAuditVerify)))
 	mux.Handle("/api/settings", s.auth(http.HandlerFunc(s.handleSettings)))
+	mux.Handle("/api/reload", s.auth(http.HandlerFunc(s.handleReload)))
+	mux.Handle("/api/config/backups", s.auth(http.HandlerFunc(s.handleConfigBackups)))
+	mux.Handle("/api/config/restore", s.auth(http.HandlerFunc(s.handleConfigRestore)))
 	mux.Handle("/api/skill", s.auth(http.HandlerFunc(s.handleSkill)))
 	mux.Handle("/api/skill/download", s.auth(http.HandlerFunc(s.handleSkillDownload)))
 	mux.Handle("/api/skill/install", s.auth(http.HandlerFunc(s.handleSkillInstall)))
@@ -436,14 +439,24 @@ func hostWarnings(h *config.Host, spec config.Spec) []string {
 	if h.Auth.Type == "key" && h.Auth.KeyPath == "" && h.Auth.KeyEnv == "" {
 		out = append(out, "认证类型是私钥，但没有填私钥路径，也没有填私钥内容的环境变量。")
 	}
-	if len(h.HostKey.Fingerprints) == 0 && h.HostKey.KnownHosts == "" && !h.HostKey.Insecure {
+	if len(h.HostKey.Fingerprints) == 0 && h.HostKey.KnownHosts == "" && !h.HostKey.Insecure && !h.HostKey.AcceptNew &&
+		!sshx.KnownHostsHasHost(config.ExpandHome(config.DefaultKnownHosts()), h.AddrPort()) {
+		// The default file already trusts this host: saying it has no host key
+		// would be noise, and the editor would ask for a scan that changes
+		// nothing.
 		out = append(out, "没有钉主机密钥：默认会去读 ~/.ssh/known_hosts，里面没有这台机器就会被拒绝连接（可以用“扫描主机密钥”）。")
+	}
+	if h.HostKey.AcceptNew {
+		out = append(out, "已开启 accept_new：第一次连接会接受并记录服务器密钥，之后密钥变了仍会拒绝。只适合确实无法事先扫描的主机。")
 	}
 	if h.HostKey.Insecure {
 		out = append(out, "已打开 insecure：不校验服务器身份。仅测试用。")
 	}
 	if spec.Mode == config.ModeReadonly && len(spec.Allow) == 0 {
 		out = append(out, "策略是 readonly 但白名单是空的，等于什么都跑不了。")
+	}
+	if spec.DisableBaseline {
+		out = append(out, "已关闭内置危险命令拦截：rm -rf /、mkfs、关机之类只能靠自己的 allow/deny 规则挡住。")
 	}
 	if spec.RedactOutput && spec.Disclosure == config.DisclosureFull {
 		out = append(out, "遮蔽了输出里的地址，但身份可见度还是 full，主机清单里依然能看到地址。")
@@ -601,9 +614,11 @@ func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleHostKey(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Addr string `json:"addr"`
-		Port int    `json:"port"`
-		User string `json:"user"`
+		Addr       string `json:"addr"`
+		Port       int    `json:"port"`
+		User       string `json:"user"`
+		ProxyJump  string `json:"proxy_jump"`
+		KnownHosts string `json:"known_hosts"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -616,9 +631,26 @@ func (s *Server) handleHostKey(w http.ResponseWriter, r *http.Request) {
 	if in.Port == 0 {
 		in.Port = 22
 	}
+	addr := net.JoinHostPort(in.Addr, strconv.Itoa(in.Port))
 	// Scan as the account the operator configured, not as an invented name.
 	// sshd logs an unknown name as "Invalid user", which fail2ban counts.
-	target := sshx.Target{Addr: net.JoinHostPort(in.Addr, strconv.Itoa(in.Port)), User: in.User}
+	target := sshx.Target{Addr: addr, User: in.User}
+	// A host behind a bastion cannot be reached directly. The form names the
+	// jump host by its configured host name, the same way proxy_jump does.
+	if in.ProxyJump != "" {
+		jump, err := s.broker().Config().Host(in.ProxyJump)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("跳板机 %q：%w", in.ProxyJump, err))
+			return
+		}
+		target.Proxy = &sshx.Target{
+			Name:    jump.Name,
+			Addr:    jump.AddrPort(),
+			User:    jump.User,
+			Auth:    jump.Auth,
+			HostKey: jump.HostKey,
+		}
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	keys, err := sshx.ScanHostKeys(ctx, target, 10*time.Second)
@@ -633,14 +665,22 @@ func (s *Server) handleHostKey(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]keyInfo, 0, len(keys))
 	for _, k := range keys {
-		line := sshx.KnownHostsLine(net.JoinHostPort(in.Addr, strconv.Itoa(in.Port)), k)
+		line := sshx.KnownHostsLine(addr, k)
 		out = append(out, keyInfo{
 			Type:        k.Type(),
 			Fingerprint: ssh.FingerprintSHA256(k),
 			Line:        line,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"keys": out})
+	// A known_hosts file that already pins a different key is a conflict the
+	// form cannot see. Filling the scanned value in would silently replace the
+	// trust anchor, so the answer carries it and the page refuses to fill.
+	khPath := in.KnownHosts
+	if khPath == "" {
+		khPath = config.DefaultKnownHosts()
+	}
+	warnings := sshx.KnownHostsKeyMismatches(config.ExpandHome(khPath), addr, keys)
+	writeJSON(w, http.StatusOK, map[string]any{"keys": out, "warnings": warnings})
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
@@ -657,6 +697,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		Type:     q.Get("type"),
 		Decision: q.Get("decision"),
 		Query:    q.Get("q"),
+		Failed:   q.Get("failed") == "1",
 	}
 	if since := q.Get("since"); since != "" {
 		t, err := parseSince(since)
@@ -727,6 +768,8 @@ func (s *Server) handleAuditSummary(w http.ResponseWriter, r *http.Request) {
 		"decision":  sum.Decision,
 		"type":      sum.Type,
 		"host":      sum.Host,
+		"failed":    sum.Failed,
+		"timeouts":  sum.Timeouts,
 		"today":     sum.Today,
 		"last_24h":  sum.Last24h,
 		"last_7d":   sum.Last7d,
@@ -768,6 +811,65 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleReload re-reads the config file after the operator edited it outside
+// the window. Until this existed, the editor kept its startup copy until the
+// next save through the editor, and an external edit looked like it vanished.
+func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeErr(w, http.StatusMethodNotAllowed, errors.New("请用 POST"))
+		return
+	}
+	if err := s.reload(); err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleConfigBackups(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeErr(w, http.StatusMethodNotAllowed, errors.New("请用 GET"))
+		return
+	}
+	list, err := config.Backups(s.cfgPath)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if len(list) > 20 {
+		list = list[:20]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"config": s.cfgPath, "backups": list})
+}
+
+func (s *Server) handleConfigRestore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeErr(w, http.StatusMethodNotAllowed, errors.New("请用 POST"))
+		return
+	}
+	var in struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	saved, err := config.RestoreBackup(s.cfgPath, in.Name)
+	if err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	if err := s.reload(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	slog.Info("config restored", "backup", in.Name, "config", s.cfgPath)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "previous_saved_as": saved})
 }
 
 // maxFieldBytes is the configured truncation of stored output, with the default

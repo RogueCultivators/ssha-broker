@@ -96,6 +96,56 @@ func hashRecord(r Record, prevHash string) string {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
+// legacyHashRecord recomputes the hash of records written before the UTF-8
+// repair. encoding/json writes each invalid UTF-8 byte as the six-character
+// JSON escape for U+FFFD, while Unmarshal turns that escape into a real U+FFFD
+// character that Marshal writes as three bytes. Verification therefore has to
+// reconstruct the escaped form to reproduce the old hash. New records never
+// need this: they are sanitized before they are written.
+func legacyHashRecord(r Record, prevHash string) string {
+	r.Hash = ""
+	b, _ := json.Marshal(r)
+	b = bytes.ReplaceAll(b, []byte("�"), []byte("\\ufffd"))
+	h := sha256.New()
+	h.Write([]byte(prevHash))
+	h.Write([]byte{'\n'})
+	h.Write(b)
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// sanitizeRecord repairs every string before it is hashed and written.
+//
+// The hash is taken over the JSON encoding of the record, and verification
+// unmarshals the line and marshals it again. That round trip is not an identity
+// for invalid UTF-8: Marshal escapes an invalid byte as U+FFFD, while Unmarshal
+// produces a real U+FFFD character and Marshal then writes its three UTF-8
+// bytes. A command that prints binary output (grep -a, for instance) would
+// otherwise produce a record that can never verify again.
+func sanitizeRecord(r *Record) {
+	valid := func(s *string) { *s = strings.ToValidUTF8(*s, "�") }
+	valid(&r.ID)
+	valid(&r.PrevHash)
+	valid(&r.Hash)
+	valid(&r.SessionID)
+	valid(&r.Actor)
+	valid(&r.Machine)
+	if r.Agent != nil {
+		valid(&r.Agent.Tool)
+		valid(&r.Agent.Model)
+		valid(&r.Agent.SessionID)
+	}
+	valid(&r.Type)
+	valid(&r.Host)
+	valid(&r.Command)
+	valid(&r.Path)
+	valid(&r.Cwd)
+	valid(&r.Decision)
+	valid(&r.Reason)
+	valid(&r.Stdout)
+	valid(&r.Stderr)
+	valid(&r.SudoUser)
+}
+
 func newID(t time.Time) string {
 	var b [5]byte
 	_, _ = rand.Read(b[:])
@@ -159,6 +209,7 @@ func (l *Logger) Append(r *Record) error {
 	}
 	r.PrevHash = prevHash
 	r.Seq = prevSeq + 1
+	sanitizeRecord(r)
 	r.Hash = hashRecord(*r, prevHash)
 
 	line, err := json.Marshal(r)
@@ -231,6 +282,12 @@ type Filter struct {
 	// happened: host, command, path, reason, type and actor. It is what the
 	// editor's search box and `audit ls --query` both send.
 	Query string
+	// Failed keeps records whose remote command returned non-zero, including
+	// the -1 ssha uses when it could not run at all. Denied commands never ran
+	// and have ExitCode 0, so a policy denial is not a failure here.
+	Failed bool
+	// ExitCode, when set, keeps records with exactly that exit code.
+	ExitCode *int
 }
 
 // matchesQuery is a substring search rather than a regular expression on
@@ -263,6 +320,12 @@ func (f Filter) match(r *Record) bool {
 		return false
 	}
 	if !f.Since.IsZero() && r.Time.Before(f.Since) {
+		return false
+	}
+	if f.Failed && r.ExitCode == 0 {
+		return false
+	}
+	if f.ExitCode != nil && r.ExitCode != *f.ExitCode {
 		return false
 	}
 	return true
@@ -361,7 +424,11 @@ func Verify(path string) (int, error) {
 			return n - 1, fmt.Errorf("record #%d (%s): broken chain: prev_hash %s, expected %s", n, r.ID, r.PrevHash, prev)
 		}
 		if want := hashRecord(r, prev); r.Hash != want {
-			return n - 1, fmt.Errorf("record #%d (%s): hash mismatch, record was modified", n, r.ID)
+			// Records written before sanitizeRecord may hash the escaped form of
+			// invalid UTF-8. Accept that form; it parses to the same record.
+			if r.Hash != legacyHashRecord(r, prev) {
+				return n - 1, fmt.Errorf("record #%d (%s): hash mismatch, record was modified", n, r.ID)
+			}
 		}
 		prev = r.Hash
 	}

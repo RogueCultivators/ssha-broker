@@ -93,6 +93,108 @@ func (a *App) cmdInit(args []string) int {
 }
 
 // ---------------------------------------------------------------------------
+// config backups
+// ---------------------------------------------------------------------------
+
+const configGroup = `Subcommands:
+  config backups [--limit N]   list timestamped copies of the config
+  config restore <name>        restore one (the current file is backed up first)
+
+Every save that changes the config writes one timestamped copy and keeps the
+newest ten. Restoring is itself undoable: the file being replaced is copied to
+the same rotation before it is overwritten.`
+
+func (a *App) cmdConfig(args []string) int {
+	if a.groupHelp("config", configGroup, args) {
+		return ExitOK
+	}
+	if len(args) == 0 {
+		return a.usageErr("usage: ssha config <backups|restore>")
+	}
+	switch args[0] {
+	case "backups", "ls", "list":
+		return a.cmdConfigBackups(args[1:])
+	case "restore":
+		return a.cmdConfigRestore(args[1:])
+	default:
+		return a.usageErr(fmt.Sprintf("unknown config subcommand %q", args[0]))
+	}
+}
+
+func (a *App) configPath() (string, error) {
+	if a.ConfigPath != "" {
+		return config.ExpandHome(a.ConfigPath), nil
+	}
+	p, err := config.Discover()
+	if err != nil {
+		return "", err
+	}
+	return config.ExpandHome(p), nil
+}
+
+func (a *App) cmdConfigBackups(args []string) int {
+	fs := a.newFlagSet("config backups")
+	limit := fs.Int("limit", 20, "maximum backups to list")
+	if code, ok := a.parse(fs, args); !ok {
+		return code
+	}
+	path, err := a.configPath()
+	if err != nil {
+		return a.fail(err)
+	}
+	list, err := config.Backups(path)
+	if err != nil {
+		return a.fail(err)
+	}
+	all := len(list)
+	if *limit > 0 && len(list) > *limit {
+		list = list[:*limit]
+	}
+	a.emit(map[string]any{"config": path, "backups": list, "count": all}, func() string {
+		if all == 0 {
+			return fmt.Sprintf("no backups for %s yet\n(one is written whenever a save changes the file)\n", path)
+		}
+		var sb strings.Builder
+		tw := tabwriter.NewWriter(&sb, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "TIME\tSIZE\tNAME")
+		for _, b := range list {
+			fmt.Fprintf(tw, "%s\t%d\t%s\n", b.ModTime.Local().Format("2006-01-02 15:04:05"), b.Size, b.Name)
+		}
+		tw.Flush()
+		fmt.Fprintf(&sb, "\nrestore one with:  ssha config restore <name>\n")
+		return sb.String()
+	})
+	return ExitOK
+}
+
+func (a *App) cmdConfigRestore(args []string) int {
+	fs := a.newFlagSet("config restore")
+	rest, code, ok := a.positionals(fs, args, 1)
+	if !ok {
+		return code
+	}
+	if len(rest) != 1 {
+		return a.usageErr("usage: ssha config restore <backup name>")
+	}
+	path, err := a.configPath()
+	if err != nil {
+		return a.fail(err)
+	}
+	saved, err := config.RestoreBackup(path, rest[0])
+	if err != nil {
+		return a.fail(err)
+	}
+	a.emit(map[string]any{"config": path, "restored": rest[0], "previous_saved_as": saved}, func() string {
+		s := fmt.Sprintf("restored %s from %s\n", path, rest[0])
+		if saved != "" {
+			s += fmt.Sprintf("the file it replaced is kept as %s\n", saved)
+		}
+		return s
+	})
+	return ExitOK
+}
+
+// ---------------------------------------------------------------------------
 // hosts
 // ---------------------------------------------------------------------------
 
@@ -332,6 +434,7 @@ func (a *App) cmdHostKey(args []string) int {
 	fs := a.newFlagSet("host-key")
 	port := fs.Int("port", 0, "SSH port, when the argument is not a configured host name")
 	write := fs.Bool("write", false, "append the keys to the known_hosts file")
+	pin := fs.Bool("pin", false, "write the scanned fingerprints into this host's config (needs a configured host name)")
 	knownHosts := fs.String("known-hosts", "", "known_hosts file to consider (default: from the host config, else ~/.ssh/known_hosts)")
 	timeout := fs.Duration("timeout", 10*time.Second, "connection timeout")
 	rest, code, ok := a.positionals(fs, args, 1)
@@ -339,23 +442,38 @@ func (a *App) cmdHostKey(args []string) int {
 		return code
 	}
 	if len(rest) != 1 {
-		return a.usageErr("usage: ssha host-key <name|addr>[:port] [--write] [--known-hosts PATH]")
+		return a.usageErr("usage: ssha host-key <name|addr>[:port] [--write] [--pin] [--known-hosts PATH]")
 	}
 	spec := rest[0]
 
-	// A configured host name supplies the address, the user, the credentials
-	// and the known_hosts location. Scanning as that account is what keeps sshd
-	// from logging an invented username, which fail2ban treats as an attack.
+	// A configured host name supplies the address, the user, the credentials,
+	// the jump host and the known_hosts location. Scanning as that account is
+	// what keeps sshd from logging an invented username, which fail2ban treats
+	// as an attack; the jump host is what makes a host behind a bastion
+	// reachable at all.
 	addr := ""
 	khPath := ""
+	cfgPath := ""
+	var cfgHost *config.Host
 	target := sshx.Target{}
 	if b, err := a.open(); err == nil {
 		if h, err := b.Config().Host(spec); err == nil {
 			addr = h.AddrPort()
 			khPath = h.HostKey.KnownHosts
-			target = sshx.Target{Name: h.Name, Addr: addr, User: h.User, Auth: h.Auth}
+			cp := b.Config().Path()
+			copyHost := *h
+			cfgHost, cfgPath = &copyHost, cp
+			var rerr error
+			target, rerr = b.ResolveTarget(h)
+			if rerr != nil {
+				b.Close()
+				return a.fail(rerr)
+			}
 		}
 		b.Close()
+	}
+	if *pin && cfgHost == nil {
+		return a.usageErr("--pin needs a configured host name, not an address")
 	}
 	if addr == "" {
 		defaultPort := *port
@@ -414,8 +532,73 @@ func (a *App) cmdHostKey(args []string) int {
 			fmt.Fprintln(a.Stderr, "ssha: refusing to change it - verify the server out of band before editing known_hosts by hand")
 		}
 	}
+	if *pin {
+		fps := make([]string, 0, len(infos))
+		for _, info := range infos {
+			fps = append(fps, info.Fingerprint)
+		}
+		// The scan took a few seconds, which is enough for the editor to save
+		// this host. Re-read it so the write does not put stale fields back.
+		latest := cfgHost
+		if cfg, err := config.Load(cfgPath); err == nil {
+			if h, err := cfg.Host(cfgHost.Name); err == nil {
+				copyHost := *h
+				latest = &copyHost
+			}
+		}
+		if err := pinFingerprints(latest, fps); err != nil {
+			return a.fail(err)
+		}
+		if err := config.UpsertHost(cfgPath, *latest); err != nil {
+			return a.fail(err)
+		}
+		result["pinned"] = true
+		result["config"] = cfgPath
+		text += fmt.Sprintf("\npinned %d fingerprint(s) to %s (the previous file is kept as a backup)\n", len(fps), cfgPath)
+	}
 	a.emit(result, func() string { return text })
 	return ExitOK
+}
+
+// pinFingerprints applies the same rule as `host-key --write`: a key already
+// pinned for this host is evidence, and a scan that contradicts all of it is
+// not allowed to replace it silently. Overlap means the server still has a key
+// the operator trusted, so refreshing the set (new algorithm, retired one) is
+// safe. The caller writes the config afterwards.
+func pinFingerprints(h *config.Host, scanned []string) error {
+	if len(scanned) == 0 {
+		return fmt.Errorf("the scan returned no fingerprints")
+	}
+	if h.HostKey.Insecure {
+		return fmt.Errorf("host_key.insecure is on for %s; turn it off before pinning, or the pins would be ignored", h.Name)
+	}
+	if len(h.HostKey.Fingerprints) > 0 {
+		// Mirror the verifier: a bare base64 value means SHA256, and whitespace
+		// around a fingerprint in the file should not look like a conflict.
+		norm := func(fp string) string {
+			fp = strings.TrimSpace(fp)
+			if !strings.HasPrefix(fp, "SHA256:") {
+				fp = "SHA256:" + fp
+			}
+			return fp
+		}
+		found := map[string]bool{}
+		for _, fp := range scanned {
+			found[norm(fp)] = true
+		}
+		for _, fp := range h.HostKey.Fingerprints {
+			if found[norm(fp)] {
+				h.HostKey.Fingerprints = scanned
+				return nil
+			}
+		}
+		return fmt.Errorf("refusing to replace host_key.fingerprints for %s: none of the pinned keys matches what the server offered\n"+
+			"  pinned:  %s\n  scanned: %s\n"+
+			"verify the server out of band; if it really was rebuilt, edit the config by hand",
+			h.Name, strings.Join(h.HostKey.Fingerprints, ", "), strings.Join(scanned, ", "))
+	}
+	h.HostKey.Fingerprints = scanned
+	return nil
 }
 
 func renderHostKeys(addr, khPath string, keys []hostKeyInfo, written bool, added int) string {
@@ -1110,6 +1293,7 @@ func (a *App) cmdPolicy(args []string) int {
 // auditGroup is the help for `ssha audit --help`.
 const auditGroup = `Subcommands:
   audit ls [flags]     list recent audit records
+  audit stats          summarize failures and denials
   audit show <id>      show one audit record
   audit verify         verify the audit hash chain
 
@@ -1120,12 +1304,14 @@ func (a *App) cmdAudit(args []string) int {
 		return ExitOK
 	}
 	if len(args) == 0 {
-		return a.usageErr("usage: ssha audit <ls|show|verify>")
+		return a.usageErr("usage: ssha audit <ls|stats|show|verify>")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
 	case "ls", "list":
 		return a.cmdAuditLs(rest)
+	case "stats", "summary":
+		return a.cmdAuditStats(rest)
 	case "show":
 		return a.cmdAuditShow(rest)
 	case "verify":
@@ -1135,15 +1321,56 @@ func (a *App) cmdAudit(args []string) int {
 	}
 }
 
+// sinceDuration is a --since value that also accepts days, which is how an
+// operator says "the last week": 7d. The backquoted word in the flag usage
+// keeps the help column reading "duration".
+type sinceDuration struct{ d time.Duration }
+
+func (s *sinceDuration) String() string {
+	if s == nil || s.d == 0 {
+		return "0s"
+	}
+	return s.d.String()
+}
+func (s *sinceDuration) Get() any { return s.d }
+func (s *sinceDuration) Set(v string) error {
+	v = strings.TrimSpace(v)
+	if strings.HasSuffix(v, "d") {
+		days, err := strconv.Atoi(strings.TrimSuffix(v, "d"))
+		if err != nil {
+			return fmt.Errorf("bad day count %q", v)
+		}
+		s.d = time.Duration(days) * 24 * time.Hour
+		return nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return err
+	}
+	s.d = d
+	return nil
+}
+
+// humanDuration renders 720h as 30d, the way the flag was probably written.
+func humanDuration(d time.Duration) string {
+	if d > 0 && d%(24*time.Hour) == 0 {
+		return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
+	}
+	return d.String()
+}
+
 func (a *App) cmdAuditLs(args []string) int {
 	fs := a.newFlagSet("audit ls")
 	var host, typ, decision string
 	limit := fs.Int("limit", 50, "maximum records")
-	since := fs.Duration("since", 0, "only records newer than this duration ago")
+	var since sinceDuration
+	fs.Var(&since, "since", "only records newer than `duration` ago (1h, 7d)")
 	fs.StringVar(&host, "host", "", "filter by host")
 	fs.StringVar(&typ, "type", "", "filter by type: exec, upload, download, git")
 	fs.StringVar(&decision, "decision", "", "filter by decision: allowed, denied")
 	query := fs.String("query", "", "search command, path, reason, host and type")
+	failed := fs.Bool("failed", false, "only commands with a non-zero exit code")
+	exitCode := fs.Int("exit", 0, "only records with this exit code")
 	if code, ok := a.parse(fs, args); !ok {
 		return code
 	}
@@ -1153,9 +1380,15 @@ func (a *App) cmdAuditLs(args []string) int {
 	}
 	defer b.Close()
 
-	filter := audit.Filter{Host: host, Type: typ, Decision: decision, Query: *query}
-	if *since > 0 {
-		filter.Since = time.Now().Add(-*since)
+	filter := audit.Filter{Host: host, Type: typ, Decision: decision, Query: *query, Failed: *failed}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "exit" {
+			v := *exitCode
+			filter.ExitCode = &v
+		}
+	})
+	if since.d > 0 {
+		filter.Since = time.Now().Add(-since.d)
 	}
 	records, err := b.AuditQuery(filter, *limit)
 	if err != nil {
@@ -1192,6 +1425,76 @@ func renderAuditTable(records []audit.Record) string {
 			r.Time.Local().Format("2006-01-02 15:04:05"), r.ID, r.Host, r.Type, r.Decision, r.ExitCode, cmd)
 	}
 	tw.Flush()
+	return sb.String()
+}
+
+func (a *App) cmdAuditStats(args []string) int {
+	fs := a.newFlagSet("audit stats")
+	var host, typ string
+	var since sinceDuration
+	fs.Var(&since, "since", "only records newer than `duration` ago (1h, 7d; default: all)")
+	fs.StringVar(&host, "host", "", "filter by host")
+	fs.StringVar(&typ, "type", "", "filter by type: exec, upload, download, git")
+	if code, ok := a.parse(fs, args); !ok {
+		return code
+	}
+	b, err := a.open()
+	if err != nil {
+		return a.fail(err)
+	}
+	defer b.Close()
+
+	filter := audit.Filter{Host: host, Type: typ}
+	if since.d > 0 {
+		filter.Since = time.Now().Add(-since.d)
+	}
+	records, err := b.AuditQuery(filter, 0)
+	if err != nil {
+		return a.fail(err)
+	}
+	stats := audit.ComputeStats(records)
+	window := "all recorded time"
+	if since.d > 0 {
+		window = "last " + humanDuration(since.d)
+	}
+	a.emit(map[string]any{"audit_log": b.AuditPath(), "window": window, "stats": stats},
+		func() string { return renderAuditStats(stats, window) })
+	return ExitOK
+}
+
+func renderAuditStats(s audit.Stats, window string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "window: %s\n", window)
+	fmt.Fprintf(&sb, "records: %d (allowed %d, denied %d)\n", s.Total, s.Allowed, s.Denied)
+	if s.Allowed == 0 {
+		sb.WriteString("no allowed commands in this window\n")
+		return sb.String()
+	}
+	pct := float64(s.Failed) * 100 / float64(s.Allowed)
+	fmt.Fprintf(&sb, "failed: %d of %d allowed (%.1f%%)", s.Failed, s.Allowed, pct)
+	if s.Timeouts > 0 {
+		fmt.Fprintf(&sb, ", timeouts %d", s.Timeouts)
+	}
+	sb.WriteString("\n")
+	if s.Failed == 0 {
+		return sb.String()
+	}
+
+	section := func(title string, counts map[string]int) {
+		rows := audit.TopFailures(counts, 10)
+		if len(rows) == 0 {
+			return
+		}
+		sb.WriteString("\n" + title + ":\n")
+		tw := tabwriter.NewWriter(&sb, 0, 4, 2, ' ', 0)
+		for _, r := range rows {
+			fmt.Fprintf(tw, "  %d\t%s\n", r.Count, r.Key)
+		}
+		tw.Flush()
+	}
+	section("by exit code", s.ExitCodes)
+	section("hosts with failures", s.FailedByHost)
+	section("top failing commands", s.FailedCommands)
 	return sb.String()
 }
 
@@ -1267,8 +1570,10 @@ func renderAuditDetail(r *audit.Record) string {
 	if r.Truncated {
 		row("truncated", "true")
 	}
-	row("stdout", r.Stdout)
-	row("stderr", r.Stderr)
+	// Old records may predate the audit log's UTF-8 repair. Printing raw bytes
+	// would garble the terminal, so show the replacement character instead.
+	row("stdout", strings.ToValidUTF8(r.Stdout, "�"))
+	row("stderr", strings.ToValidUTF8(r.Stderr, "�"))
 	row("prev hash", r.PrevHash)
 	row("hash", r.Hash)
 	tw.Flush()

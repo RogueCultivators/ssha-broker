@@ -216,8 +216,10 @@ the address, say so and let the operator decide.
   changed, so the user can find it with `ssha audit show <id>`.
 - Never create, edit or delete an ssh key, a `known_hosts` file, or the ssha
   config to work around a failure. Fix the config through the user, not by
-  weakening it. `ssha host-key <addr> --write` is the only sanctioned way to
-  pin a new host key, and it refuses to overwrite a conflicting one.
+  weakening it. `ssha host-key <name> --pin` (into `host_key.fingerprints`) and
+  `ssha host-key <addr> --write` (into known_hosts) are the sanctioned ways to
+  pin a new key; both refuse to overwrite a conflicting one. Pinning changes
+  trust, so let the operator decide.
 - `--reveal` switches off identity hiding and is for the operator, not for you.
   Do not add it.
 
@@ -231,7 +233,8 @@ the address, say so and let the operator decide.
   key already trusted for this host on port 22 is accepted on other ports
   automatically; this error means that did not apply. Do not disable
   verification. Report the fingerprints and let the user decide, then suggest
-  `ssha host-key <host> --write`.
+  `ssha host-key <host> --pin` for a configured host, or
+  `ssha host-key <addr> --write` for a raw address.
 - `keyboard-interactive was refused: the password is probably wrong` or
   `the server rejected every credential offered`: the credentials are wrong.
   Stop and report; do not retry with variations.

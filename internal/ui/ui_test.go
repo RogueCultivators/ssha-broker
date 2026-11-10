@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ssha/internal/config"
 )
 
 func TestLoadTokenFromFile(t *testing.T) {
@@ -295,6 +298,91 @@ func TestAuditRejectsAnUnreadableSince(t *testing.T) {
 	}
 	if !strings.Contains(body, "7d") {
 		t.Errorf("the error should say what a valid value looks like: %s", body)
+	}
+}
+
+func TestAuditFailedFilterAndSummary(t *testing.T) {
+	s := testServer(t, editorConfig)
+	auditLog(t, s)
+	f, err := os.OpenFile(s.broker().AuditPath(), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.WriteString(`{"id":"a4","time":"2026-01-01T10:11:00Z","seq":4,"session_id":"s2","type":"exec","host":"db-1","command":"grep x /nope","decision":"allowed","exit_code":2}` + "\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	code, body := do(t, s, "GET", "/api/audit?failed=1", "")
+	if code != 200 {
+		t.Fatalf("%d %s", code, body)
+	}
+	if !strings.Contains(body, `"id":"a4"`) || strings.Contains(body, `"id":"a1"`) {
+		t.Fatalf("failed filter returned %s", body)
+	}
+	code, body = do(t, s, "GET", "/api/audit/summary", "")
+	if code != 200 {
+		t.Fatalf("%d %s", code, body)
+	}
+	if !strings.Contains(body, `"failed":1`) {
+		t.Fatalf("summary must count the failure: %s", body)
+	}
+}
+
+func TestConfigBackupsEndpointAndRestore(t *testing.T) {
+	s := testServer(t, editorConfig)
+	before := read(t, s)
+	if code, body := do(t, s, "POST", "/api/settings",
+		`{"policy": {"mode": "readonly"}, "audit": {}}`); code != 200 {
+		t.Fatalf("settings: %d %s", code, body)
+	}
+	code, body := do(t, s, "GET", "/api/config/backups", "")
+	if code != 200 {
+		t.Fatalf("backups: %d %s", code, body)
+	}
+	var listed struct {
+		Backups []config.Backup `json:"backups"`
+	}
+	if err := json.Unmarshal([]byte(body), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Backups) != 1 {
+		t.Fatalf("got %d backups: %s", len(listed.Backups), body)
+	}
+
+	code, body = do(t, s, "POST", "/api/config/restore",
+		fmt.Sprintf(`{"name":%q}`, listed.Backups[0].Name))
+	if code != 200 {
+		t.Fatalf("restore: %d %s", code, body)
+	}
+	if got := read(t, s); got != before {
+		t.Fatalf("restored config differs:\n--- before\n%s\n--- after\n%s", before, got)
+	}
+	if !strings.Contains(body, "previous_saved_as") {
+		t.Errorf("restore should say where the replaced file went: %s", body)
+	}
+}
+
+func TestReloadPicksUpAnExternalEdit(t *testing.T) {
+	s := testServer(t, editorConfig)
+	body := read(t, s)
+	if !strings.Contains(body, "timeout: 30s") {
+		t.Fatalf("fixture changed: %s", body)
+	}
+	body = strings.Replace(body, "timeout: 30s", "timeout: 45s", 1)
+	if err := os.WriteFile(s.ConfigPath(), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, b := do(t, s, "POST", "/api/reload", ""); code != 200 {
+		t.Fatalf("reload: %d %s", code, b)
+	}
+	code, state := do(t, s, "GET", "/api/state", "")
+	if code != 200 {
+		t.Fatalf("state: %d %s", code, state)
+	}
+	if !strings.Contains(state, `"timeout":"45s"`) {
+		t.Fatalf("the reloaded policy is not visible: %s", state)
 	}
 }
 

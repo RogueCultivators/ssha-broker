@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"ssha/internal/config"
 	"ssha/skills"
 )
 
@@ -112,6 +113,57 @@ func TestAppendKnownHosts(t *testing.T) {
 		}
 		if added != 1 || len(conflicts) != 0 {
 			t.Fatalf("added=%d conflicts=%v, want 1 and none", added, conflicts)
+		}
+	})
+}
+
+func TestPinFingerprints(t *testing.T) {
+	const fpA = "SHA256:aaaaaaaa"
+	const fpB = "SHA256:bbbbbbbb"
+	const fpC = "SHA256:cccccccc"
+
+	t.Run("empty pins take the scan", func(t *testing.T) {
+		h := &config.Host{Name: "web"}
+		if err := pinFingerprints(h, []string{fpA, fpB}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(h.HostKey.Fingerprints, ",") != fpA+","+fpB {
+			t.Fatalf("pins = %v", h.HostKey.Fingerprints)
+		}
+	})
+
+	t.Run("overlap allows a refresh", func(t *testing.T) {
+		h := &config.Host{Name: "web", HostKey: config.HostKey{Fingerprints: []string{fpA, fpC}}}
+		if err := pinFingerprints(h, []string{fpA, fpB}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(h.HostKey.Fingerprints, ",") != fpA+","+fpB {
+			t.Fatalf("pins = %v", h.HostKey.Fingerprints)
+		}
+	})
+
+	t.Run("bare values match their SHA256 form", func(t *testing.T) {
+		h := &config.Host{Name: "web", HostKey: config.HostKey{Fingerprints: []string{"bbbbbbbb"}}}
+		if err := pinFingerprints(h, []string{fpB}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("a contradiction is refused and kept", func(t *testing.T) {
+		h := &config.Host{Name: "web", HostKey: config.HostKey{Fingerprints: []string{fpC}}}
+		err := pinFingerprints(h, []string{fpA})
+		if err == nil || !strings.Contains(err.Error(), "refusing") {
+			t.Fatalf("got %v, want a refusal", err)
+		}
+		if len(h.HostKey.Fingerprints) != 1 || h.HostKey.Fingerprints[0] != fpC {
+			t.Fatalf("the old pin changed: %v", h.HostKey.Fingerprints)
+		}
+	})
+
+	t.Run("insecure is refused", func(t *testing.T) {
+		h := &config.Host{Name: "web", HostKey: config.HostKey{Insecure: true}}
+		if err := pinFingerprints(h, []string{fpA}); err == nil {
+			t.Fatal("pinning while insecure must be refused")
 		}
 	})
 }
