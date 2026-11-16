@@ -639,6 +639,28 @@
               </div>
             </div>
             <div class="grid" style="margin-top:10px">
+              <div>
+                <label for="f-allow_forwards">允许转发的目标（host:port，一行一个，支持 * 和 ?）</label>
+                <textarea id="f-allow_forwards" placeholder="10.0.0.12:5432"></textarea>
+              </div>
+              <div>
+                <label for="f-deny_forwards">禁止转发的目标（先于允许检查）</label>
+                <textarea id="f-deny_forwards" placeholder="169.254.169.254:*"></textarea>
+              </div>
+            </div>
+            <p class="hint" style="margin-top:6px">只允许监听本机回环地址。<code>ssha forward</code> 的目标必须命中这里的允许列表；留空表示这台主机不能做端口转发。</p>
+            <div class="grid" style="margin-top:10px">
+              <div>
+                <label for="f-allow_remote_forwards">远程转发允许访问的本机目标（host:port，一行一个）</label>
+                <textarea id="f-allow_remote_forwards" placeholder="127.0.0.1:8000"></textarea>
+              </div>
+              <div>
+                <label for="f-deny_remote_forwards">远程转发禁止的本机目标（先于允许检查）</label>
+                <textarea id="f-deny_remote_forwards" placeholder="127.0.0.1:22"></textarea>
+              </div>
+            </div>
+            <p class="hint" style="margin-top:6px">远程转发（<code>ssha forward --remote</code>）在远端主机上开回环端口，把连接送回这台机器；目标写本机看到的地址。留空表示不允许远程转发。</p>
+            <div class="grid" style="margin-top:10px">
               <div class="check"><input type="checkbox" id="f-redact_output"><label for="f-redact_output">输出里的地址和用户名换成 &lt;host&gt;/&lt;user&gt;</label></div>
               <div class="check"><input type="checkbox" id="f-allow_meta"><label for="f-allow_meta">只读模式下允许管道和分号</label></div>
               <div class="check"><input type="checkbox" id="f-no_baseline"><label for="f-no_baseline">关闭内置危险命令拦截</label></div>
@@ -1042,13 +1064,21 @@ const commas = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
 const MODES = { allow: "允许", readonly: "只读", deny: "禁止" };
 const AUTHS = { key: "私钥", agent: "ssh-agent", password: "密码" };
 const DECISIONS = { allowed: "已允许", denied: "已拒绝" };
-const TYPES = { exec: "执行命令", upload: "上传", download: "下载", git: "Git" };
+const TYPES = { exec: "执行命令", upload: "上传", download: "下载", git: "Git", forward: "端口转发" };
+const FORWARD_KINDS = { open: "打开", deny: "拒绝", connection: "一次连接", close: "关闭" };
+const FORWARD_DIRECTIONS = { local: "本地转发", remote: "远程转发" };
 const DISCLOSURES = { full: "完整", alias: "只给别名", blind: "最少" };
 const modeLabel = (m) => MODES[m] || m || "";
 const authLabel = (a) => AUTHS[a] || a || "";
 const decisionLabel = (d) => DECISIONS[d] || d || "";
 const typeLabel = (t) => TYPES[t] || t || "";
 const disclosureLabel = (d) => DISCLOSURES[d] || d || "";
+const forwardLabel = (f) => {
+  if (!f || !f.destination) return "";
+  return f.direction === "remote"
+    ? `${f.listen || "?"} -> local ${f.destination}`
+    : `${f.listen || "?"} -> ${f.destination}`;
+};
 
 // Preferences live in local storage: they are about this window, not about who
 // may ssh where, so they do not belong in the config file.
@@ -1228,6 +1258,10 @@ function loadHost() {
   v("f-deny", (p?.deny_commands || []).join("\n"));
   v("f-deny_paths", (p?.deny_paths || []).join("\n"));
   v("f-redact_patterns", (p?.redact_patterns || []).join("\n"));
+  v("f-allow_forwards", (p?.allow_forwards || []).join("\n"));
+  v("f-deny_forwards", (p?.deny_forwards || []).join("\n"));
+  v("f-allow_remote_forwards", (p?.allow_remote_forwards || []).join("\n"));
+  v("f-deny_remote_forwards", (p?.deny_remote_forwards || []).join("\n"));
   $("f-redact_output").checked = !!p?.redact_output;
   $("f-allow_meta").checked = !!p?.allow_shell_metacharacters;
   $("f-no_baseline").checked = !!p?.disable_baseline;
@@ -1287,7 +1321,9 @@ function syncPolicyFields() {
   if (eff) {
     $("effective").textContent = `当前生效：${modeLabel(eff.mode)}，超时 ${eff.timeout}`
       + (eff.allow_commands?.length ? `，允许 ${eff.allow_commands.length} 条规则` : "")
-      + (eff.deny_commands?.length ? `，拒绝 ${eff.deny_commands.length} 条规则` : "");
+      + (eff.deny_commands?.length ? `，拒绝 ${eff.deny_commands.length} 条规则` : "")
+      + (eff.allow_forwards?.length ? `，转发目标 ${eff.allow_forwards.length} 个` : "，端口转发关闭")
+      + (eff.allow_remote_forwards?.length ? `，远程转发目标 ${eff.allow_remote_forwards.length} 个` : "");
   }
 }
 
@@ -1344,6 +1380,10 @@ function collect() {
       deny_commands: lines($("f-deny").value),
       deny_paths: lines($("f-deny_paths").value),
       redact_patterns: lines($("f-redact_patterns").value),
+      allow_forwards: lines($("f-allow_forwards").value),
+      deny_forwards: lines($("f-deny_forwards").value),
+      allow_remote_forwards: lines($("f-allow_remote_forwards").value),
+      deny_remote_forwards: lines($("f-deny_remote_forwards").value),
       redact_output: $("f-redact_output").checked,
       allow_shell_metacharacters: $("f-allow_meta").checked,
       disable_baseline: $("f-no_baseline").checked,
@@ -1351,7 +1391,7 @@ function collect() {
     if (timeout) p.timeout = timeout;
     const max = num("f-max");
     if (max) p.max_output_bytes = max;
-    for (const k of ["allow_commands", "deny_commands", "deny_paths", "redact_patterns"]) if (!p[k].length) delete p[k];
+    for (const k of ["allow_commands", "deny_commands", "deny_paths", "redact_patterns", "allow_forwards", "deny_forwards", "allow_remote_forwards", "deny_remote_forwards"]) if (!p[k].length) delete p[k];
     h.policy = p;
   }
   return h;
@@ -1826,8 +1866,11 @@ function renderAuditList(records, meta) {
       day = label;
       html += `<div class="audit-day">${esc(label)}</div>`;
     }
-    const what = x.command || x.path || typeLabel(x.type);
+    const fwd = x.forward || {};
+    const what = x.command || x.path || forwardLabel(fwd) || typeLabel(x.type);
     const extra = [decisionLabel(x.decision), typeLabel(x.type)];
+    if (fwd.direction) extra.push(FORWARD_DIRECTIONS[fwd.direction] || fwd.direction);
+    if (fwd.kind) extra.push(FORWARD_KINDS[fwd.kind] || fwd.kind);
     if (x.exit_code) extra.push("exit " + x.exit_code);
     if (x.duration_ms) extra.push(x.duration_ms + " ms");
     html += `<div class="audit-row${x.id === auditSelected ? " active" : ""}${x.decision === "denied" ? " is-denied" : ""}" role="button" tabindex="0" data-id="${esc(x.id)}">
@@ -1850,8 +1893,16 @@ function renderAuditDetail(x) {
     el.innerHTML = `<p class="empty">选一条记录，在这里看命令和输出。</p>`;
     return;
   }
+  const fwd = x.forward || {};
   const facts = [
     ["主机", x.host],
+    ["方向", fwd.destination ? (FORWARD_DIRECTIONS[fwd.direction || "local"] || fwd.direction) : ""],
+    ["转发事件", FORWARD_KINDS[fwd.kind] || ""],
+    ["监听", fwd.listen],
+    ["转发目标", fwd.destination],
+    ["来源地址", fwd.peer],
+    ["上行", fwd.bytes_up ? fwd.bytes_up + " B" : ""],
+    ["下行", fwd.bytes_down ? fwd.bytes_down + " B" : ""],
     ["路径", x.path && x.command ? x.path : ""],
     ["工作目录", x.cwd],
     ["退出码", x.exit_code === undefined ? "" : String(x.exit_code)],
@@ -1870,7 +1921,7 @@ function renderAuditDetail(x) {
   const decisionClass = x.decision === "denied" ? "bad" : "ok";
   el.innerHTML = `
     <p class="when">${esc(new Date(x.time).toLocaleString())}</p>
-    <h2>${esc(x.command || x.path || typeLabel(x.type))}</h2>
+    <h2>${esc(x.command || x.path || forwardLabel(fwd) || typeLabel(x.type))}</h2>
     <div class="tags">
       <span class="tag ${decisionClass}">${esc(decisionLabel(x.decision))}</span>
       <span class="tag">${esc(typeLabel(x.type))}</span>

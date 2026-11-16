@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -1241,6 +1242,170 @@ func parseOctalMode(s string) (os.FileMode, error) {
 // policy
 // ---------------------------------------------------------------------------
 
+func (a *App) cmdForward(args []string) int {
+	fs := a.newFlagSet("forward")
+	listen := fs.String("listen", "127.0.0.1:0", "loopback `address` to listen on (with --remote: on the SSH host); port 0 picks a free one")
+	to := fs.String("to", "", "destination `host:port` as seen from the SSH host (with --remote: local to this machine)")
+	remote := fs.Bool("remote", false, "listen on the SSH host and forward back to this machine")
+	pos, code, ok := a.positionals(fs, args, 1)
+	if !ok {
+		return code
+	}
+	if len(pos) != 1 {
+		return a.usageErr("usage: ssha forward <host> [--remote] [--listen 127.0.0.1:0] --to host:port")
+	}
+	if *to == "" {
+		return a.usageErr("missing --to host:port")
+	}
+
+	b, err := a.open()
+	if err != nil {
+		return a.fail(err)
+	}
+	defer b.Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	started := time.Now()
+
+	// A forward can serve several connections concurrently. Serialise their
+	// output so both writers and a test's strings.Builder see whole lines.
+	var eventMu sync.Mutex
+	onEvent := func(ev broker.ForwardEvent) {
+		eventMu.Lock()
+		defer eventMu.Unlock()
+		if a.JSON {
+			out := map[string]any{
+				"event":       "connection",
+				"peer":        ev.Peer,
+				"bytes_up":    ev.BytesUp,
+				"bytes_down":  ev.BytesDown,
+				"duration_ms": ev.Duration.Milliseconds(),
+			}
+			if ev.Err != nil {
+				out["error"] = ev.Err.Error()
+			}
+			if ev.Hint != "" {
+				out["hint"] = ev.Hint
+			}
+			a.emitJSONLine(out)
+			return
+		}
+		if ev.Err != nil {
+			fmt.Fprintf(a.Stderr, "ssha: forwarded connection from %s failed: %v\n", ev.Peer, ev.Err)
+			if ev.Hint != "" {
+				fmt.Fprintf(a.Stderr, "ssha: %s\n", ev.Hint)
+			}
+		}
+	}
+
+	var res *broker.ForwardResult
+	var session *broker.ForwardSession
+	if *remote {
+		res, session, err = b.OpenRemoteForward(ctx, broker.RemoteForwardRequest{
+			Host:        pos[0],
+			Listen:      *listen,
+			Destination: *to,
+			OnEvent:     onEvent,
+		})
+	} else {
+		res, session, err = b.OpenForward(ctx, broker.ForwardRequest{
+			Host:        pos[0],
+			Listen:      *listen,
+			Destination: *to,
+			OnEvent:     onEvent,
+		})
+	}
+	if res == nil {
+		return a.fail(err)
+	}
+	if res.Decision == audit.DecisionDenied {
+		a.emit(res, func() string {
+			var sb strings.Builder
+			fmt.Fprintf(&sb, "DENIED: %s\n", res.Reason)
+			if res.AuditID != "" {
+				fmt.Fprintf(&sb, "audit: %s\n", res.AuditID)
+			}
+			return sb.String()
+		})
+		return ExitDenied
+	}
+	if err != nil {
+		return a.fail(err)
+	}
+	defer session.Close()
+
+	if a.JSON {
+		out := map[string]any{
+			"event":       "open",
+			"host":        res.Host,
+			"direction":   res.Direction,
+			"listen":      res.Listen,
+			"destination": res.Destination,
+		}
+		if res.Via != "" {
+			out["via"] = res.Via
+		}
+		if res.AuditID != "" {
+			out["audit_id"] = res.AuditID
+		}
+		a.emitJSONLine(out)
+	} else {
+		if res.Direction == audit.ForwardDirectionRemote {
+			fmt.Fprintf(a.Stdout, "forwarding %s:%s -> local %s%s\n", res.Host, res.Listen, res.Destination, viaSuffix(res.Via, res.Host, res.Direction))
+		} else {
+			fmt.Fprintf(a.Stdout, "forwarding %s -> %s via %s%s\n", res.Listen, res.Destination, res.Host, viaSuffix(res.Via, res.Host, res.Direction))
+		}
+		if res.AuditID != "" {
+			fmt.Fprintf(a.Stdout, "audit: %s\n", res.AuditID)
+		}
+		fmt.Fprintln(a.Stdout, "Ctrl-C stops the forward.")
+	}
+
+	serveErr := session.Serve(ctx)
+	closeErr := session.Close()
+	conns, bytesUp, bytesDown := session.Stats()
+	duration := time.Since(started)
+
+	if a.JSON {
+		out := map[string]any{
+			"event":       "close",
+			"host":        res.Host,
+			"direction":   res.Direction,
+			"listen":      res.Listen,
+			"destination": res.Destination,
+			"connections": conns,
+			"bytes_up":    bytesUp,
+			"bytes_down":  bytesDown,
+			"duration_ms": duration.Milliseconds(),
+		}
+		if res.Via != "" {
+			out["via"] = res.Via
+		}
+		if session.RemoteLost() {
+			out["error"] = "ssh connection lost"
+		} else if serveErr != nil {
+			out["error"] = serveErr.Error()
+		}
+		a.emitJSONLine(out)
+	} else if !session.RemoteLost() && serveErr == nil {
+		fmt.Fprintf(a.Stdout, "closed: %d connection(s), %s up, %s down after %s\n",
+			conns, humanBytes(bytesUp), humanBytes(bytesDown), duration.Round(time.Second))
+	}
+
+	if session.RemoteLost() {
+		fmt.Fprintln(a.Stderr, "ssha: forward closed: the SSH connection was lost")
+		return ExitFail
+	}
+	if serveErr != nil {
+		return a.fail(serveErr)
+	}
+	if closeErr != nil {
+		return a.fail(closeErr)
+	}
+	return ExitOK
+}
+
 func (a *App) cmdPolicy(args []string) int {
 	if a.groupHelp("policy", "Subcommands:\n  policy check <host> [--] <command>   evaluate policy without executing", args) {
 		return ExitOK
@@ -1359,6 +1524,31 @@ func humanDuration(d time.Duration) string {
 	return d.String()
 }
 
+// viaSuffix names the jump host without implying that it dials the
+// destination: that is the final host's job.
+func viaSuffix(jump, host, direction string) string {
+	if jump == "" {
+		return ""
+	}
+	if direction == audit.ForwardDirectionRemote {
+		return fmt.Sprintf(" (through %s; the listener is on %s)", jump, host)
+	}
+	return fmt.Sprintf(" (through %s; the destination is dialled from %s)", jump, host)
+}
+
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
 func (a *App) cmdAuditLs(args []string) int {
 	fs := a.newFlagSet("audit ls")
 	var host, typ, decision string
@@ -1366,7 +1556,7 @@ func (a *App) cmdAuditLs(args []string) int {
 	var since sinceDuration
 	fs.Var(&since, "since", "only records newer than `duration` ago (1h, 7d)")
 	fs.StringVar(&host, "host", "", "filter by host")
-	fs.StringVar(&typ, "type", "", "filter by type: exec, upload, download, git")
+	fs.StringVar(&typ, "type", "", "filter by type: exec, upload, download, git, forward")
 	fs.StringVar(&decision, "decision", "", "filter by decision: allowed, denied")
 	query := fs.String("query", "", "search command, path, reason, host and type")
 	failed := fs.Bool("failed", false, "only commands with a non-zero exit code")
@@ -1413,6 +1603,17 @@ func renderAuditTable(records []audit.Record) string {
 		if r.Path != "" {
 			cmd = r.Path
 		}
+		if r.Forward != nil {
+			dir := r.Forward.Direction
+			if dir == "" {
+				dir = audit.ForwardDirectionLocal
+			}
+			if dir == audit.ForwardDirectionRemote {
+				cmd = fmt.Sprintf("remote %s %s -> local %s", r.Forward.Kind, r.Forward.Listen, r.Forward.Destination)
+			} else {
+				cmd = fmt.Sprintf("local %s %s -> %s", r.Forward.Kind, r.Forward.Listen, r.Forward.Destination)
+			}
+		}
 		if len(cmd) > 60 {
 			cmd = cmd[:57] + "..."
 		}
@@ -1434,7 +1635,7 @@ func (a *App) cmdAuditStats(args []string) int {
 	var since sinceDuration
 	fs.Var(&since, "since", "only records newer than `duration` ago (1h, 7d; default: all)")
 	fs.StringVar(&host, "host", "", "filter by host")
-	fs.StringVar(&typ, "type", "", "filter by type: exec, upload, download, git")
+	fs.StringVar(&typ, "type", "", "filter by type: exec, upload, download, git, forward")
 	if code, ok := a.parse(fs, args); !ok {
 		return code
 	}
@@ -1551,6 +1752,19 @@ func renderAuditDetail(r *audit.Record) string {
 	row("command", r.Command)
 	row("path", r.Path)
 	row("cwd", r.Cwd)
+	if r.Forward != nil {
+		row("forward", r.Forward.Kind)
+		row("direction", firstNonEmptyStr(r.Forward.Direction, audit.ForwardDirectionLocal))
+		row("listen", r.Forward.Listen)
+		row("destination", r.Forward.Destination)
+		row("peer", r.Forward.Peer)
+		if r.Forward.BytesUp != 0 {
+			row("bytes up", fmt.Sprint(r.Forward.BytesUp))
+		}
+		if r.Forward.BytesDown != 0 {
+			row("bytes down", fmt.Sprint(r.Forward.BytesDown))
+		}
+	}
 	if r.Sudo {
 		// Elevation is the difference between "ran a status check" and "ran it as
 		// root", so it belongs in the human-readable view too.

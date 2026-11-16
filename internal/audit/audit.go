@@ -33,6 +33,25 @@ const (
 	// TypeGit is a local git fetch, pull, push, clone or ls-remote. The host
 	// field holds the git account name, not an SSH host.
 	TypeGit = "git"
+	// TypeForward is a local port forward: its opening, its denial, each
+	// accepted connection, and its closing.
+	TypeForward = "forward"
+)
+
+// Forward record kinds. A forward session produces several records; Kind says
+// which moment each one describes.
+const (
+	ForwardOpen       = "open"
+	ForwardDeny       = "deny"
+	ForwardConnection = "connection"
+	ForwardClose      = "close"
+)
+
+// Forward directions. A local forward listens here and dials from the SSH
+// host; a remote forward listens on the SSH host and dials here.
+const (
+	ForwardDirectionLocal  = "local"
+	ForwardDirectionRemote = "remote"
 )
 
 // Decisions.
@@ -84,6 +103,23 @@ type Record struct {
 	// is never part of a record.
 	Sudo     bool   `json:"sudo,omitempty"`
 	SudoUser string `json:"sudo_user,omitempty"`
+
+	// Forward describes a local port-forwarding record.
+	Forward *ForwardInfo `json:"forward,omitempty"`
+}
+
+// ForwardInfo is the port-forwarding detail of a record.
+type ForwardInfo struct {
+	// Kind is open, deny, connection or close.
+	Kind string `json:"kind,omitempty"`
+	// Direction is local or remote. It is empty on records written before
+	// remote forwarding existed, which were all local.
+	Direction   string `json:"direction,omitempty"`
+	Listen      string `json:"listen,omitempty"`
+	Destination string `json:"destination,omitempty"`
+	Peer        string `json:"peer,omitempty"`
+	BytesUp     int64  `json:"bytes_up,omitempty"`
+	BytesDown   int64  `json:"bytes_down,omitempty"`
 }
 
 func hashRecord(r Record, prevHash string) string {
@@ -144,6 +180,13 @@ func sanitizeRecord(r *Record) {
 	valid(&r.Stdout)
 	valid(&r.Stderr)
 	valid(&r.SudoUser)
+	if r.Forward != nil {
+		valid(&r.Forward.Kind)
+		valid(&r.Forward.Direction)
+		valid(&r.Forward.Listen)
+		valid(&r.Forward.Destination)
+		valid(&r.Forward.Peer)
+	}
 }
 
 func newID(t time.Time) string {

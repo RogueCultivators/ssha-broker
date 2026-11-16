@@ -53,6 +53,47 @@ type Compiled struct {
 	allow     []*regexp.Regexp
 	denyPaths []*regexp.Regexp
 	redact    []*regexp.Regexp
+
+	allowForwards       []globRule
+	denyForwards        []globRule
+	allowRemoteForwards []globRule
+	denyRemoteForwards  []globRule
+}
+
+// globRule is one host:port pattern from allow_forwards or deny_forwards.
+type globRule struct {
+	pattern string
+	re      *regexp.Regexp
+}
+
+// compileGlobs turns host:port glob patterns into case-insensitive regular
+// expressions. Only * (any run) and ? (one character) are special; everything
+// else is literal, so an address like 10.0.0.12 needs no escaping.
+func compileGlobs(patterns []string) []globRule {
+	out := make([]globRule, 0, len(patterns))
+	for _, p := range patterns {
+		var b strings.Builder
+		b.WriteString("(?i)^")
+		for _, r := range p {
+			switch r {
+			case '*':
+				b.WriteString(".*")
+			case '?':
+				b.WriteString(".")
+			default:
+				b.WriteString(regexp.QuoteMeta(string(r)))
+			}
+		}
+		b.WriteString("$")
+		re, err := regexp.Compile(b.String())
+		if err != nil {
+			// Everything except * and ? is quoted, so this cannot happen for a
+			// pattern that reached policy compilation. Skip rather than panic.
+			continue
+		}
+		out = append(out, globRule{pattern: p, re: re})
+	}
+	return out
 }
 
 // Decision is the outcome of a policy check.
@@ -101,6 +142,10 @@ func Compile(spec config.Spec) (*Compiled, error) {
 	if c.redact, err = compileAll(spec.RedactPatterns, false); err != nil {
 		return nil, err
 	}
+	c.allowForwards = compileGlobs(spec.AllowForwards)
+	c.denyForwards = compileGlobs(spec.DenyForwards)
+	c.allowRemoteForwards = compileGlobs(spec.AllowRemoteForwards)
+	c.denyRemoteForwards = compileGlobs(spec.DenyRemoteForwards)
 	return c, nil
 }
 
@@ -181,6 +226,63 @@ func (c *Compiled) DecidePath(path string, write bool) Decision {
 			return d
 		}
 	}
+	return d
+}
+
+// DecideForward evaluates a local port-forwarding destination (host:port).
+//
+// Forwarding is opt-in twice over: the host must be in mode=allow and the
+// destination must match an allow_forwards pattern. deny_forwards is checked
+// first. The destination should be canonical (lower-case host, numeric port);
+// the broker normalizes it before calling this.
+func (c *Compiled) DecideForward(destination string) Decision {
+	return c.decideForward(destination, c.allowForwards, c.denyForwards,
+		"allow_forwards", "deny_forwards", "port forwarding", "destination")
+}
+
+// DecideRemoteForward evaluates the local destination that a host's remote
+// forward may expose. The listener itself is always loopback on the host; this
+// controls what that listener may reach on the machine running ssha.
+func (c *Compiled) DecideRemoteForward(destination string) Decision {
+	return c.decideForward(destination, c.allowRemoteForwards, c.denyRemoteForwards,
+		"allow_remote_forwards", "deny_remote_forwards", "remote forwarding", "local destination")
+}
+
+func (c *Compiled) decideForward(destination string, allow, deny []globRule, allowKey, denyKey, what, label string) Decision {
+	d := Decision{Mode: c.Spec.Mode}
+	switch c.Spec.Mode {
+	case config.ModeDeny:
+		d.Reason = "host policy mode is deny"
+		return d
+	case config.ModeReadonly:
+		d.Reason = "readonly policy: port forwarding is not permitted"
+		return d
+	case config.ModeAllow:
+	default:
+		d.Reason = fmt.Sprintf("unknown policy mode %q", c.Spec.Mode)
+		return d
+	}
+
+	target := strings.ToLower(strings.TrimSpace(destination))
+	for _, rule := range deny {
+		if rule.re.MatchString(target) {
+			d.Rule = rule.pattern
+			d.Reason = fmt.Sprintf("%s matches %s rule %s", label, denyKey, rule.pattern)
+			return d
+		}
+	}
+	if len(allow) == 0 {
+		d.Reason = fmt.Sprintf("%s is not enabled for this host (add policy.%s)", what, allowKey)
+		return d
+	}
+	for _, rule := range allow {
+		if rule.re.MatchString(target) {
+			d.Allowed = true
+			d.Rule = rule.pattern
+			return d
+		}
+	}
+	d.Reason = fmt.Sprintf("%s is not in the host's %s list", label, allowKey)
 	return d
 }
 

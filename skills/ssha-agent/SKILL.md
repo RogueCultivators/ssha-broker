@@ -88,6 +88,41 @@ or denied, is appended to a hash-chained audit log and returns an `audit_id`.
    ssha download web-1 /etc/hosts -
    ```
 
+## Reaching a service through a host
+
+There are two directions. Both print the actual loopback address and block
+until Ctrl-C; both require the host's `mode: allow`, its `policy.allow_*`
+list, and a loopback listener. A denial (exit 77) is final.
+
+**Local** — a service that listens on the remote side, exposed on this
+machine. Use it instead of copying credentials around:
+
+```bash
+ssha forward db-1 --listen 127.0.0.1:0 --to 10.0.0.12:5432
+```
+
+The destination must match `allow_forwards`; `deny_forwards` wins. It is
+dialled from that host itself, not from its jump host: if the host is reached
+through a jump and its sshd refuses TCP forwarding, target the jump host
+instead when the service is only reachable from there.
+
+**Remote (`--remote`)** — a service that listens on this machine, exposed on
+the remote host's loopback. Use it when the remote host must call back to
+something only you can reach (e.g. a local inference server):
+
+```bash
+ssha forward build-1 --remote --listen 127.0.0.1:18000 --to 127.0.0.1:8000
+```
+
+The destination must match `allow_remote_forwards`. `--listen` must be a
+numeric loopback IP (`127.0.0.1` or `::1`); omit the port to let the remote
+sshd allocate one. The remote sshd must allow TCP forwarding, and the remote
+side of the tunnel sees traffic from the sshd, not from the caller — check
+with the operator before relying on source-address rules.
+
+Do not leave a forward running after the task, and never try to make either
+listener reachable from another machine.
+
 ## Commands that need sudo
 
 Use the SSH login for ordinary work. When an authorized task needs root, add

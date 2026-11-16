@@ -30,6 +30,14 @@ policy:
     - 'rm\s+-rf\s+/'
     - '\bmkfs\b'
     - '\b(shutdown|reboot|poweroff)\b'
+  # 端口转发默认关闭。allow_forwards 管本地转发（ssha forward）：目标写远端
+  # 主机拨得通的 host:port。allow_remote_forwards 管远程转发（--remote）：
+  # 远端在主机的回环上监听，目标写这台机器上的 host:port。两者都支持 * 和 ?，
+  # 都只允许回环监听，deny_* 先于 allow_* 检查。
+  # allow_forwards: [10.0.0.12:5432, 'redis.internal:6379']
+  # deny_forwards: ['169.254.169.254:*']
+  # allow_remote_forwards: ['127.0.0.1:8000']
+  # deny_remote_forwards: ['127.0.0.1:22']
 
 # ---------------------------------------------------------------------------
 # 审计：每条命令一行 JSON，带 SHA-256 哈希链
@@ -151,6 +159,10 @@ hosts:
 #     timeout: 30s
 #     max_output_bytes: 131072
 #     deny_paths: ['^/etc/shadow$']       # 禁止上传/下载的路径
+#     allow_forwards: ['10.0.0.12:5432']  # 允许 ssha forward 的目标；留空即关闭
+#     deny_forwards: ['169.254.169.254:*']
+#     allow_remote_forwards: ['127.0.0.1:8000']  # --remote 允许回连的本机目标
+#     deny_remote_forwards: ['127.0.0.1:22']
 #     disclosure: full|alias|blind        # 给 agent 看多少身份信息
 #     redact_output: true                 # 输出里的地址/用户名换成 <host>/<user>
 #     redact_patterns: ['\b\d{1,3}(\.\d{1,3}){3}\b']

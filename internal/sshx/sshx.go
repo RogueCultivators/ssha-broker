@@ -437,6 +437,37 @@ func normalizeFP(fp string) string {
 	return fp
 }
 
+// DialContext opens a TCP channel to addr from the SSH server. This is the
+// transport behind a local port forward; policy is decided by the caller.
+func (c *Client) DialContext(ctx context.Context, addr string) (net.Conn, error) {
+	if c == nil || c.ssh == nil {
+		return nil, errors.New("sshx: not connected")
+	}
+	return c.ssh.DialContext(ctx, "tcp", addr)
+}
+
+// Listen asks the SSH server to open a listening socket on addr. Incoming
+// connections arrive as forwarded channels; this is the transport behind a
+// remote port forward. The policy is decided by the caller, and the listener
+// must be served or the SSH connection can hang.
+func (c *Client) Listen(addr string) (net.Listener, error) {
+	if c == nil || c.ssh == nil {
+		return nil, errors.New("sshx: not connected")
+	}
+	return c.ssh.Listen("tcp", addr)
+}
+
+// KeepAlive sends an SSH keepalive request. OpenSSH's server ignores the
+// unknown request, which is fine: the point is traffic on an idle connection,
+// so NAT and firewall state do not expire under a long-lived tunnel.
+func (c *Client) KeepAlive() error {
+	if c == nil || c.ssh == nil {
+		return errors.New("sshx: not connected")
+	}
+	_, _, err := c.ssh.SendRequest("keepalive@openssh.com", false, nil)
+	return err
+}
+
 // Close releases the connection.
 func (c *Client) Close() error {
 	if c == nil {

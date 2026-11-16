@@ -168,6 +168,37 @@ func TestPinFingerprints(t *testing.T) {
 	})
 }
 
+func TestHumanBytes(t *testing.T) {
+	tests := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0 B"},
+		{1023, "1023 B"},
+		{1024, "1.0 KiB"},
+		{1536, "1.5 KiB"},
+		{1024 * 1024, "1.0 MiB"},
+	}
+	for _, tc := range tests {
+		if got := humanBytes(tc.in); got != tc.want {
+			t.Errorf("humanBytes(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// A forward without a destination is a usage error and must not open the
+// broker, which would prompt for a password on a terminal.
+func TestForwardRequiresDestination(t *testing.T) {
+	var out, errs strings.Builder
+	a := &App{Stdout: &out, Stderr: &errs}
+	if code := a.cmdForward([]string{"web"}); code != ExitUsage {
+		t.Fatalf("cmdForward = %d, want %d; stderr=%s", code, ExitUsage, errs.String())
+	}
+	if !strings.Contains(errs.String(), "--to") {
+		t.Fatalf("unhelpful error: %q", errs.String())
+	}
+}
+
 func TestParseOctalMode(t *testing.T) {
 	tests := []struct {
 		in      string

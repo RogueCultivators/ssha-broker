@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -116,6 +117,19 @@ type Spec struct {
 	Deny []string `yaml:"deny_commands,omitempty" json:"deny_commands,omitempty"`
 	// DenyPaths blocks file transfers whose remote path matches.
 	DenyPaths []string `yaml:"deny_paths,omitempty" json:"deny_paths,omitempty"`
+	// AllowForwards lists host:port destinations a local port forward may
+	// target. Glob wildcards (* and ?) are accepted in both parts. Forwarding
+	// is off for a host until this list has an entry.
+	AllowForwards []string `yaml:"allow_forwards,omitempty" json:"allow_forwards,omitempty"`
+	// DenyForwards is checked before AllowForwards. Same syntax.
+	DenyForwards []string `yaml:"deny_forwards,omitempty" json:"deny_forwards,omitempty"`
+	// AllowRemoteForwards lists local host:port destinations that this host
+	// may expose through a remote forward. The listener always sits on the
+	// host's loopback; this list controls what it may reach on the machine
+	// running ssha. Remote forwarding is off until this list has an entry.
+	AllowRemoteForwards []string `yaml:"allow_remote_forwards,omitempty" json:"allow_remote_forwards,omitempty"`
+	// DenyRemoteForwards is checked before AllowRemoteForwards. Same syntax.
+	DenyRemoteForwards []string `yaml:"deny_remote_forwards,omitempty" json:"deny_remote_forwards,omitempty"`
 	// MaxOutputBytes caps the captured stdout+stderr per command.
 	MaxOutputBytes int `yaml:"max_output_bytes,omitempty" json:"max_output_bytes,omitempty"`
 	// Timeout caps a single command's wall-clock time.
@@ -185,6 +199,18 @@ func Merge(base Spec, over *Spec) Spec {
 	}
 	if over.DenyPaths != nil {
 		out.DenyPaths = over.DenyPaths
+	}
+	if over.AllowForwards != nil {
+		out.AllowForwards = over.AllowForwards
+	}
+	if over.DenyForwards != nil {
+		out.DenyForwards = over.DenyForwards
+	}
+	if over.AllowRemoteForwards != nil {
+		out.AllowRemoteForwards = over.AllowRemoteForwards
+	}
+	if over.DenyRemoteForwards != nil {
+		out.DenyRemoteForwards = over.DenyRemoteForwards
 	}
 	if over.MaxOutputBytes > 0 {
 		out.MaxOutputBytes = over.MaxOutputBytes
@@ -516,6 +542,12 @@ func (c *Config) Validate() error {
 		if spec.Mode == ModeReadonly && len(spec.Allow) == 0 {
 			return fmt.Errorf("config: host %q: policy mode readonly requires at least one allow_commands entry", h.Name)
 		}
+		if err := validateForwardPatterns(fmt.Sprintf("host %q", h.Name), spec.AllowForwards, spec.DenyForwards); err != nil {
+			return err
+		}
+		if err := validateRemoteForwardPatterns(fmt.Sprintf("host %q", h.Name), spec.AllowRemoteForwards, spec.DenyRemoteForwards); err != nil {
+			return err
+		}
 		c.byName[h.Name] = h
 	}
 	for i, h := range c.Hosts {
@@ -545,6 +577,61 @@ func validateGlobalSpec(where string, spec Spec) error {
 	case "", DisclosureFull, DisclosureAlias, DisclosureBlind:
 	default:
 		return fmt.Errorf("config: %s: unknown policy disclosure %q (want full, alias or blind)", where, spec.Disclosure)
+	}
+	if err := validateForwardPatterns(where, spec.AllowForwards, spec.DenyForwards); err != nil {
+		return err
+	}
+	return validateRemoteForwardPatterns(where, spec.AllowRemoteForwards, spec.DenyRemoteForwards)
+}
+
+// validateForwardPatterns checks the shape of port-forwarding patterns. They
+// are globs, not regular expressions: `*` and `?` match in the host and the
+// port. IPv6 addresses must be bracketed, as everywhere else host:port is
+// written.
+func validateForwardPatterns(where string, allow, deny []string) error {
+	return validateForwardPatternList(where, "allow_forwards", allow, "deny_forwards", deny)
+}
+
+func validateRemoteForwardPatterns(where string, allow, deny []string) error {
+	return validateForwardPatternList(where, "allow_remote_forwards", allow, "deny_remote_forwards", deny)
+}
+
+func validateForwardPatternList(where, allowKey string, allow []string, denyKey string, deny []string) error {
+	for _, p := range allow {
+		if err := validateForwardPattern(p); err != nil {
+			return fmt.Errorf("config: %s: %s: %w", where, allowKey, err)
+		}
+	}
+	for _, p := range deny {
+		if err := validateForwardPattern(p); err != nil {
+			return fmt.Errorf("config: %s: %s: %w", where, denyKey, err)
+		}
+	}
+	return nil
+}
+
+func validateForwardPattern(p string) error {
+	if p == "" {
+		return errors.New("empty pattern")
+	}
+	if strings.TrimSpace(p) != p {
+		return fmt.Errorf("pattern %q has surrounding whitespace", p)
+	}
+	host, port, err := net.SplitHostPort(p)
+	if err != nil {
+		return fmt.Errorf("pattern %q: expected host:port (bracket IPv6 addresses): %w", p, err)
+	}
+	if host == "" {
+		return fmt.Errorf("pattern %q: empty host", p)
+	}
+	if strings.ContainsAny(host, " \t\r\n/@[]") {
+		return fmt.Errorf("pattern %q: host contains a character that is not allowed", p)
+	}
+	if port != "*" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("pattern %q: port must be 1-65535 or *", p)
+		}
 	}
 	return nil
 }

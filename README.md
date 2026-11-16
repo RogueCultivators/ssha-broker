@@ -220,6 +220,64 @@ policy:
 
 `timeout` / `max_output_bytes` 是**上限**：agent 请求里只能写更小的值，broker 会 clamp。
 
+#### 端口转发（默认关闭）
+
+`ssha forward` 有两个方向，都必须按主机显式打开，监听端也永远只允许回环地址：
+
+```yaml
+policy:
+  mode: allow                    # readonly / deny 的主机一律不能转发
+  allow_forwards:                # 本地转发：远端拨得通的目标
+    - 10.0.0.12:5432
+    - redis.internal:6379
+  deny_forwards:                 # 先于 allow 检查，云元数据这类地址挡在这里
+    - 169.254.169.254:*
+  allow_remote_forwards:         # 远程转发：允许回连到这台机器的目标
+    - 127.0.0.1:8000
+  deny_remote_forwards:
+    - 127.0.0.1:22
+```
+
+**本地转发（默认，`ssh -L` 语义）**
+
+```bash
+ssha forward prod-db --listen 127.0.0.1:0 --to 10.0.0.12:5432
+# forwarding 127.0.0.1:41234 -> 10.0.0.12:5432 via prod-db
+```
+
+本机开一个回环端口，连接由远端主机拨出。目标必须命中**最终主机**的
+`allow_forwards`；跳板机只负责传输，它自己的策略不参与授权。**目标是从最终
+主机拨出的，不是从跳板机拨出的**（与 `ssh -L` 一致），所以最终主机的 sshd 也要
+允许 `AllowTcpForwarding`；如果服务只能从跳板机访问，就把跳板机本身当作目标。
+
+**远程转发（`--remote`，`ssh -R` 语义）**
+
+```bash
+# 在笔记本上监听 127.0.0.1:18000，连接回到本机的 127.0.0.1:8000
+ssha forward 笔记本 --remote --listen 127.0.0.1:18000 --to 127.0.0.1:8000
+# forwarding 笔记本:127.0.0.1:18000 -> local 127.0.0.1:8000
+```
+
+远端主机在它的回环上监听，连进来的流量沿现有 SSH 连接回到**运行 ssha 的这台
+机器**。目标必须命中该主机的 `allow_remote_forwards`。`--listen` 必须是数字回环
+IP（`127.0.0.1` 或 `::1`），不写端口时由远端 sshd 分配并打印。适合让只有你本机
+能访问的服务（例如本地推理服务）被远端主机使用，不依赖本机有公网地址。
+
+**两者共同的行为**
+
+- 不写 `--listen` 时用 `127.0.0.1:0`，由系统分配端口并打印实际地址。
+  监听 `0.0.0.0` 或其他非回环地址会被拒绝。
+- 只读/deny 主机拒绝转发（退出码 77）。远端 sshd 必须允许 TCP 转发：
+  本地转发由最终主机拨目标，远程转发由最终主机开监听。
+- `proxy_jump` 会自动沿用：SSH 连接和主机密钥/凭证校验与普通命令相同。
+  经跳板机时，跳板机要允许 `direct-tcpip`（ProxyJump 本来就需要）。
+- 每次打开、拒绝、单条连接（来源地址、上下行字节、耗时）和关闭都写入审计
+  （`type: forward`，带 `direction: local|remote`），`ssha audit ls --type forward`
+  可以单独看。连接失败会实时打印到 stderr。
+- 前台运行，Ctrl-C 结束；并发连接上限 32，空闲时每 30 秒发一次 SSH keepalive。
+  `--json` 每行一个事件：`open`、`connection`（失败时带 `error`/`hint`）和 `close`。
+- v1 不支持 SOCKS5 动态转发（`-D`）和非回环绑定；MCP 工具留待后续。
+
 ### 4.3 审计 `audit`
 
 ```yaml
@@ -743,12 +801,14 @@ cp extensions/pi/ssha-agent.ts ~/.pi/agent/extensions/
    配置界面另有一把管理密码，只决定能不能打开窗口。
 2. **身份默认可见，但开关就位**：`disclosure` + `redact_output` 可以把地址、端口、
    账号乃至自定义正则从每一个工具结果里塔掉，审计文件仍留原文（详见 §6）。
-3. **策略前置**：`ssh_exec`/`upload`/`download` 都在建立连接*之前*做策略判定，拒绝的
-   请求不会触达目标机，但依然写审计（`decision: denied` + 原因）。
+3. **策略前置**：`ssh_exec`/`upload`/`download`/`forward` 都在建立连接*之前*做策略判定，
+   拒绝的请求不会触达目标机，但依然写审计（`decision: denied` + 原因）。端口转发
+   另有独立白名单，本地和远程两个方向分别授权，监听端只允许回环地址。
 4. **审计不可静默篡改**：哈希链 + `audit verify`。sha256 链只保证「可检测」，不保证
    「不可删除」——要防删除请把 `audit.jsonl` 同步到外部（rsync/WORM 存储）。
-5. **最小工具面**：没有 `ssh_shell` 交互式会话，没有端口转发（见 Roadmap），减少了
-   被诱导做坏事的表面积。
+5. **最小工具面**：没有 `ssh_shell` 交互式会话。端口转发默认关闭，必须按主机打开
+   `allow_forwards`/`allow_remote_forwards`，只监听回环地址，且方向、目标、连接和
+   字节数全部审计，减少了被诱导做坏事的表面积。
 6. **上限不可突破**：超时和输出上限由策略设定，agent 只能更严格。
 
 **已知限制（诚实说明）**
@@ -784,8 +844,9 @@ ssha run <host> [--cwd DIR] [-e K=V] [--timeout 30s] [--max-output N] [--dry-run
 ssha multi [--host H]... [--tag T]... [--query TEXT] [--concurrency N] [--] <cmd>
 ssha upload <host> <local|-> <remote> [--mode 0644]
 ssha download <host> <remote> <local|-> [--max-bytes N]
+ssha forward <host> [--listen 127.0.0.1:0] [--to HOST:PORT] [--remote] [--json]
 ssha policy check <host> [--] <cmd>
-ssha audit ls [--host H] [--type exec|upload|download|git] [--decision allowed|denied] [--failed] [--exit N] [--limit N] [--since 1h]
+ssha audit ls [--host H] [--type exec|upload|download|git|forward] [--decision allowed|denied] [--failed] [--exit N] [--limit N] [--since 1h]
 ssha audit stats [--host H] [--type T] [--since 7d]
 ssha audit show <id>
 ssha audit verify
@@ -836,6 +897,7 @@ internal/config/          配置加载、校验、策略合并、**YAML 节点�
 internal/policy/          策略编译与判定（含基线拦截、元字符规则）
 internal/audit/           JSONL + 哈希链审计，flock 并发安全
 internal/sshx/            x/crypto/ssh 封装：连接池、执行、SFTP、ProxyJump、主机密钥校验/扫描
+internal/forward/         仅回环的端口转发：本地监听或包装远端监听、双向拷贝、连接统计
 internal/broker/          核心：串起 config + policy + audit + sshx（CLI / MCP / UI 共用）
                           含备注检索与身份遮蔽
 internal/mcpsrv/          MCP server（7 个工具）+ HTTP token 作用域
@@ -853,7 +915,8 @@ scripts/                  e2e、MCP 冒烟与隐私脚本
 
 ## 11. Roadmap
 
-- [ ] 交互式会话与端口转发（`ssh_shell` / `ssh_tunnel`），带会话录像（asciinema cast）
+- [ ] 交互式会话（`ssh_shell`），带会话录像（asciinema cast）
+- [ ] SOCKS5 动态转发（`ssha forward -D`）；MCP 隧道工具
 - [ ] 会话级别审批：`require_approval_commands` + 一次性 token
 - [ ] 审计导出到 syslog / OTLP，支持外部 WORM 存储
 - [ ] `ssha serve` 常驻模式：Windows 命名管道 / Unix socket，agent 走本地 RPC

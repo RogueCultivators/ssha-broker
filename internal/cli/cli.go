@@ -42,6 +42,7 @@ Commands:
   multi -q <words> <cmd>   ...on every host matching a search
   upload <host> <src> <dst>   upload a file (src "-" reads stdin)
   download <host> <src> <dst> download a file (dst "-" writes stdout)
+  forward <host> --to H:P     port forward; --remote listens on the host and dials locally
   policy check <host> <cmd>   evaluate policy without executing
   audit ls                 list recent audit records
   audit stats              summarize failures, denials and timeouts
@@ -162,6 +163,8 @@ func run(args []string, version string, stdout, stderr io.Writer) int {
 		return a.cmdUpload(sub)
 	case "download":
 		return a.cmdDownload(sub)
+	case "forward":
+		return a.cmdForward(sub)
 	case "policy":
 		return a.cmdPolicy(sub)
 	case "audit":
@@ -209,6 +212,17 @@ func (a *App) open() (*broker.Broker, error) {
 		return nil, err
 	}
 	return b, nil
+}
+
+// emitJSONLine writes one compact JSON object. Long-lived commands use it so
+// that a stream of events stays a stream of lines rather than a pile of
+// indented documents.
+func (a *App) emitJSONLine(v any) {
+	enc := json.NewEncoder(a.Stdout)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		fmt.Fprintf(a.Stderr, "ssha: encode json: %v\n", err)
+	}
 }
 
 // emit writes either JSON or the fallback text rendering.
